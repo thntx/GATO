@@ -14,21 +14,28 @@ function nick(rooms, code, id) {
 const server = require('http').createServer(app); // Changed to createServer
 const io = require('socket.io')(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
 
 const fs = require('fs');
-let CLIENT_DIR = path.join(__dirname, './client');
-if (fs.existsSync(path.join(__dirname, './client/dist'))) {
-  CLIENT_DIR = path.join(__dirname, './client/dist');
-}
+const CLIENT_DIR = path.join(__dirname, './client');
+const DIST_DIR = path.join(__dirname, './client/dist');
 
+// Serve compiled Vite files first if they exist
+if (fs.existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
+}
+// Fallback to serving the raw client folder for unbundled assets (like phaser.js and the assets folder)
 app.use(express.static(CLIENT_DIR));
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(CLIENT_DIR, 'index.html'));
+  if (fs.existsSync(path.join(DIST_DIR, 'index.html'))) {
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  } else {
+    res.sendFile(path.join(CLIENT_DIR, 'index.html'));
+  }
 });
 
 const COLORS = [
@@ -89,12 +96,12 @@ io.on('connection', (socket) => {
           nick: playerNick || 'Player ' + (ids.length + 1),
           color: COLORS[ids.length],
           leader: ids.length == 0,
-          hand: [[],[]],
+          hand: [[], []],
           hold: null
         }
 
         log(code, `JOIN         ${players[socket.id].nick} (${ids.length + 1}/5 players)`);
-        callback(true, {code, players});
+        callback(true, { code, players });
         everyone('playerUpdate', { players }, code);
 
       } else {
@@ -137,7 +144,7 @@ io.on('connection', (socket) => {
       delete players[id];
 
       const ids = Object.keys(players);
-      for (let i = 0; i < ids.length; i ++) {
+      for (let i = 0; i < ids.length; i++) {
         players[ids[i]].color = COLORS[i];
       }
 
@@ -212,7 +219,7 @@ io.on('connection', (socket) => {
 
     if (everyoneReady) {
       log(code, `DEALING      ${CARDS} cards to ${ids.length} players...`);
-      for (let i = 0; i < CARDS; i ++) {
+      for (let i = 0; i < CARDS; i++) {
         for (const id of ids) {
           await sleep(200);
           deal(code, id);
@@ -251,7 +258,7 @@ io.on('connection', (socket) => {
     const amount = data.amount;
 
     log(code, `DEAL REQ     ${nick(rooms, code, id)} x${amount}`);
-    for (let i = 0; i < amount; i ++) {
+    for (let i = 0; i < amount; i++) {
       deal(code, id);
     }
 
@@ -377,33 +384,33 @@ io.on('connection', (socket) => {
       // Si t'has equivocat, penca 2:
       if (!top || card !== top.key) {
         log(code, `PENALTY      ${copierNick} wrong copy → +2 cards`);
-        for (let i = 0; i < 2; i ++) {
+        for (let i = 0; i < 2; i++) {
           await sleep(200);
           deal(code, socket.id);
         }
-      // Si no t'has equivocat i la carta és d'un altre, l'altre penca 2:
+        // Si no t'has equivocat i la carta és d'un altre, l'altre penca 2:
       } else if (id !== socket.id) {
         log(code, `PENALTY      ${targetNick} had card correctly copied → +2 cards`);
-        for (let i = 0; i < 2; i ++) {
+        for (let i = 0; i < 2; i++) {
           await sleep(200);
           deal(code, id);
         }
       } else {
         log(code, `COPY OK      ${copierNick} copied own card correctly, no penalty`);
       }
-    // Si ho és:
+      // Si ho és:
     } else {
       // Si t'has equivocat, penca 3:
       if (!top || !bottom || top.key !== bottom.key || top.id == socket.id || bottom.id == socket.id) {
         log(code, `PENALTY      ${copierNick} wrong CAT copy → +3 cards`);
-        for (let i = 0; i < 3; i ++) {
+        for (let i = 0; i < 3; i++) {
           await sleep(200);
           deal(code, socket.id);
         }
-      // Si no t'has equivocat i la carta és d'un altre, l'altre penca 3:
+        // Si no t'has equivocat i la carta és d'un altre, l'altre penca 3:
       } else if (id !== socket.id) {
         log(code, `PENALTY      ${targetNick} had CAT correctly copied → +3 cards`);
-        for (let i = 0; i < 3; i ++) {
+        for (let i = 0; i < 3; i++) {
           await sleep(200);
           deal(code, id);
         }
@@ -569,7 +576,7 @@ server.listen(8081, function () {
 function sleep(ms) {
 
   return new Promise(resolve => setTimeout(resolve, ms));
-  
+
 }
 
 function everyone(event, data, code, except = null) {
@@ -600,17 +607,17 @@ function promote(code, id) {
 
 function shuffle(deck) {
 
-    let currentIndex = deck.length;
+  let currentIndex = deck.length;
 
-    while (currentIndex !== 0) {
-        let randomIndex = Math.floor(Math.random() * currentIndex);
-        currentIndex--;
+  while (currentIndex !== 0) {
+    let randomIndex = Math.floor(Math.random() * currentIndex);
+    currentIndex--;
 
-        [deck[currentIndex], deck[randomIndex]] = [deck[randomIndex], deck[currentIndex]];
+    [deck[currentIndex], deck[randomIndex]] = [deck[randomIndex], deck[currentIndex]];
 
-    }
+  }
 
-    return deck;
+  return deck;
 
 }
 
@@ -639,7 +646,7 @@ function reshuffle(code) {
     }
   }
 
-  room.count.deck ++;
+  room.count.deck++;
   log(code, `RESHUFFLE    deck #${room.count.deck} | ${deck.length} cards (${catsRemoved} cats removed, total cats out: ${room.cats})`);
 
   if (!room.firstReshuffleHappened) {
@@ -789,10 +796,10 @@ function deal(code, id) {
   let line = 0;
   let min = -1;
   for (let i = 0; i < 2; i++) {
-      if (min == -1 || min > hand[i].length) {
-          min = hand[i].length;
-          line = i;
-      }
+    if (min == -1 || min > hand[i].length) {
+      min = hand[i].length;
+      line = i;
+    }
   }
 
   hand[line].push(card);
@@ -831,7 +838,7 @@ function handLength(code, id) {
   const hand = player.hand;
 
   let length = 0;
-  for (let i = 0; i < hand.length; i ++) {
+  for (let i = 0; i < hand.length; i++) {
     length += hand[i].length;
   }
 

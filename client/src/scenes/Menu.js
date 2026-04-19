@@ -12,7 +12,9 @@ export class Menu extends Phaser.Scene {
     }
 
     create() {
-        this.socket = io('http://localhost:8081');
+        // Use localhost when running Vite locally, otherwise let socket.io automatically connect to the public server IP
+        const serverUrl = import.meta.env.DEV ? 'http://localhost:8081' : '';
+        this.socket = io(serverUrl);
 
         const title = new Button(this, pos.X(50), pos.Y(25), pos.X(37), pos.Y(25), uiConfig.COLOR, 'GATO', pos.Y(20), 'bold', 'white');
 
