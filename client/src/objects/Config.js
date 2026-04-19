@@ -15,8 +15,6 @@ export const cardConfig = {
 export const deckConfig = {
     X: pos.X(50),
     Y: pos.Y(15),
-    CAT_X: [pos.X(35), pos.X(65), pos.X(20), pos.X(80)],
-    CAT_Y: [pos.Y(15), pos.Y(15), pos.Y(15), pos.Y(15)],
     LENGTH: 92,
 };
 

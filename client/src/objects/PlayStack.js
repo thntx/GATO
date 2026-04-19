@@ -1,6 +1,6 @@
 import { Card } from './Card.js'
 import { Button } from './Button.js'
-import { pos, playConfig, deckConfig, cardConfig } from './Config.js'
+import { pos, playConfig, deckConfig, cardConfig, handConfig } from './Config.js'
 
 export class PlayStack {
 
@@ -48,29 +48,41 @@ export class PlayStack {
     
     alienPlay(key) {
         const card = this.scene.deckStack.alienHoldCard;
+        this.scene.deckStack.alienHoldCard = null;
+        this.scene.deckStack.alienHoldId = null;
         card.key = key;
         this.play(card);
     }
 
     reshuffle() {
 
-        const deck = this.array.splice(1, this.array.length - 2);
-        const len = deck.length;
+        const deck = this.array.splice(1, Math.max(0, this.array.length - 3));
 
-        for (let i = 0; i < len; i++) {
-            const card = deck.shift();
+        const catCardW = cardConfig.SIZE * cardConfig.ALIEN_SCALE;
+        const catStride = catCardW + handConfig.ALIEN_MARGIN;
+        const catStartX = pos.X(4) + catCardW / 2;
+        const catStartY = pos.Y(6);
+
+        const deckCards = [];
+        for (const card of deck) {
             if (card.key == 11) {
+                card.setFrame(card.key);
+                card.scaleX = card.oScale;
                 card.tween({
-                        x: deckConfig.CAT_X[this.cats],
-                        y: deckConfig.CAT_Y[this.cats],
-                        duration: 200,
-                        ease: 'Quart.out'
-                    });
-                this.cats ++;
+                    x: catStartX + this.cats * catStride,
+                    y: catStartY,
+                    scaleX: cardConfig.ALIEN_SCALE,
+                    scaleY: cardConfig.ALIEN_SCALE,
+                    duration: 200,
+                    ease: 'Quart.out'
+                });
+                this.cats++;
             } else {
-                this.scene.deckStack.push(card);
+                deckCards.push(card);
             }
         }
+
+        this.scene.deckStack.pushAll(deckCards);
 
     }
 

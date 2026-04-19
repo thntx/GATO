@@ -19,6 +19,35 @@ export class HandStack {
         }
     }
 
+    setOut() {
+        this.out = true;
+        this.iterate((card) => {
+            card.setDraggable(false);
+            card.setDropZone(false);
+            card.setAlpha(0.4);
+        });
+    }
+
+    reveal(hand, startDelay = 0, delayPerCard = 300) {
+        let cardIdx = 0;
+        for (let i = 0; i < hand.length; i++) {
+            for (let j = 0; j < hand[i].length; j++) {
+                if (this.array[i] && this.array[i][j]) {
+                    const card = this.array[i][j];
+                    const key = hand[i][j];
+                    this.scene.time.delayedCall(startDelay + cardIdx * delayPerCard, () => {
+                        if (card.active) {
+                            card.key = key;
+                            card.flip(true);
+                        }
+                    });
+                    cardIdx++;
+                }
+            }
+        }
+        return startDelay + cardIdx * delayPerCard;
+    }
+
     // !! Don't call this method before ordering as card needs to have x and y defined to be able to back() !!
     setDragEvents(card) {
 
@@ -27,6 +56,8 @@ export class HandStack {
         card.setDraggable(true);
 
         card.on('pointerdown', () => {
+
+            if (this.out) return;
 
             if (this.scene.peeks[this.type] && !this.scene.peekedCards.includes(card)) {
 
@@ -40,6 +71,7 @@ export class HandStack {
 
                 if (this.scene.waitingPeek) {
                     this.scene.skip.setVisible(false);
+                    this.scene.myTurn = false;
                     this.scene.socket.emit('turnEnd', { code: this.scene.code });
                 }
 
@@ -59,7 +91,7 @@ export class HandStack {
             if (this.scene.trade) {
 
                 for (const handStack of Object.values(this.scene.handStacks)) {
-                    if (handStack !== this) {
+                    if (handStack !== this && !handStack.out) {
                         handStack.setDropZone(true);
                     }
                 }
@@ -141,6 +173,7 @@ export class HandStack {
 
                 if (this.scene.waitingTrade) {
                     this.scene.skip.setVisible(false);
+                    this.scene.myTurn = false;
                     this.scene.socket.emit('turnEnd', { code: this.scene.code });
                 }
             }
@@ -206,7 +239,10 @@ export class HandStack {
     }
 
     alienSwap(key, i, j) {
-        const card = this.swap(this.scene.deckStack.alienHoldCard, i, j);
+        const alienCard = this.scene.deckStack.alienHoldCard;
+        this.scene.deckStack.alienHoldCard = null;
+        this.scene.deckStack.alienHoldId = null;
+        const card = this.swap(alienCard, i, j);
         card.key = key;
         this.scene.playStack.play(card);
     }
@@ -229,6 +265,9 @@ export class HandStack {
     }
 
     order(onComplete = () => {}) {
+        if (this.scene.deckStack.alienHoldId === this.id) {
+            this.scene.deckStack.repositionAlienHold();
+        }
         let y = this.y - (handConfig.ROWS * cardConfig.SIZE * this.scale + (handConfig.ROWS - 1) * this.margin ) / 2 + cardConfig.SIZE * this.scale / 2;
         for (let i = 0; i < handConfig.ROWS; i ++) {
 

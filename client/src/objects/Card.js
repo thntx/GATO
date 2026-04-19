@@ -124,6 +124,7 @@ export class Card extends Phaser.GameObjects.Sprite {
                     this.tween({
                         targets: this,
                         scaleX: this.oScale,
+                        scaleY: this.oScale,
                         duration: 100,
                         ease: 'Sine.out',
                         onComplete: () => {
@@ -146,15 +147,16 @@ export class Card extends Phaser.GameObjects.Sprite {
                 dummy: 1000,
                 duration: 1000,
                 onComplete: () => {
-                    if (this.cancelPeek) this.cancelPeek = false;
-                    else {
-                        this.flip(false, true, () => {
-                            this.peeking = false;
-                            onComplete.call(this);
-                        });
+                    const cancelled = this.cancelPeek;
+                    this.cancelPeek = false;
+                    if (this.type === 'play') {
+                        this.peeking = false;
+                        return;
                     }
-                    this.peeking = false;
-                    onComplete.call(this);
+                    this.flip(false, true, () => {
+                        this.peeking = false;
+                        if (!cancelled) onComplete.call(this);
+                    });
                 }
             });
         });

@@ -18,19 +18,6 @@ export class Lobby extends Phaser.Scene {
 
     create() {
 
-        this.setLeader();
-
-        this.playerList = this.createPlayerList();
-        
-        this.leave = new Button(this, pos.X(38), pos.Y(80), pos.X(20), pos.Y(10), uiConfig.COLOR, 'Leave Room', pos.Y(5), 'bold', 'white', () => {
-            this.socket.emit('leaveRequest', { code: this.code, id: this.socket.id });
-        });
-
-        this.start = new Button(this, pos.X(62), pos.Y(80), pos.X(20), pos.Y(10), uiConfig.COLOR, 'Start Game', pos.Y(5), 'bold', 'white', () => {
-            this.socket.emit('startRequest', { code: this.code } );
-        });
-        this.checkEnableStart();
-
         this.socket.on('playerUpdate', (data) => {
             this.players = data.players;
             this.setLeader();
@@ -44,6 +31,29 @@ export class Lobby extends Phaser.Scene {
 
         this.socket.on('start', () => {
             this.scene.start('Game', { socket: this.socket, code: this.code, players: this.players });
+        });
+
+        // Ask server for the current player list. Handles the race window
+        // where playerUpdate events fired between scene transitions were dropped.
+        this.socket.emit('lobbyRequest', { code: this.code });
+
+        this.setLeader();
+
+        this.playerList = this.createPlayerList();
+        
+        this.leave = new Button(this, pos.X(38), pos.Y(80), pos.X(20), pos.Y(10), uiConfig.COLOR, 'Leave Room', pos.Y(5), 'bold', 'white', () => {
+            this.socket.emit('leaveRequest', { code: this.code, id: this.socket.id });
+        });
+
+        this.start = new Button(this, pos.X(62), pos.Y(80), pos.X(20), pos.Y(10), uiConfig.COLOR, 'Start Game', pos.Y(5), 'bold', 'white', () => {
+            this.socket.emit('startRequest', { code: this.code } );
+        });
+        this.checkEnableStart();
+
+        this.events.on('shutdown', () => {
+            this.socket.off('playerUpdate');
+            this.socket.off('leave');
+            this.socket.off('start');
         });
     }
 
@@ -66,7 +76,7 @@ export class Lobby extends Phaser.Scene {
             const label = new Button(this, 0, pos.Y(10) * i, pos.X(20), pos.Y(8), player.color, player.nick, pos.Y(4), '', 'white', id != this.socket.id && this.leader ? () => {
                 this.socket.emit('leaveRequest', { code: this.code, id: id });
             } : null );
-            const points = new Button(this, pos.X(16), pos.Y(10) * i, pos.X(10), pos.Y(8), player.color, player.points || 0 + 'p', pos.Y(4), '', 'white');
+            const points = new Button(this, pos.X(16), pos.Y(10) * i, pos.X(10), pos.Y(8), player.color, (player.points ?? 0) + 'p', pos.Y(4), '', 'white');
             list.add([rank, label, points]);
         }
         return list;

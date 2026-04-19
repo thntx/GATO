@@ -24,7 +24,14 @@ export class Menu extends Phaser.Scene {
             'Enter your nickname. This will be displayed in the game.', pos.Y(5), '#ffffff'
         );
 
+        const errorText = this.add.text(pos.X(50), pos.Y(90), '', {
+            fontSize: pos.Y(3) + 'px',
+            color: '#ff6666',
+            align: 'center'
+        }).setOrigin(0.5);
+
         const play = new Button(this, pos.X(50), pos.Y(80), pos.X(20), pos.Y(10), uiConfig.COLOR, '😺 Play 🐭', pos.Y(5), 'bold', 'white', () => {
+            errorText.setText('');
             this.socket.emit('joinRequest', {
                 code: code.text,
                 nick: nick.text
@@ -33,7 +40,7 @@ export class Menu extends Phaser.Scene {
                     data.socket = this.socket;
                     this.scene.start('Lobby', data);
                 } else {
-                    // Display data (which is an error message)
+                    errorText.setText(data);
                 }
             });
         });

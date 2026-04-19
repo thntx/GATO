@@ -29,12 +29,13 @@ export class DeckStack {
 
             if ((!card.draggable) ||
                 (card != this.topCard && card != this.holdCard) ||
-                (card == this.topCard && (!this.scene.myTurn || this.holdCard))) return;
+                (card == this.topCard && (!this.scene.myTurn || this.holdCard || this.scene.skip.visible))) return;
             card.dragging = true;
 
             if (!this.holdCard) {
                 this.holdCard = this.pop();
                 this.count();
+                this.scene.stand.setVisible(false);
 
                 this.scene.socket.emit('drawRequest', { code: this.scene.code }, (key) => {
                     card.key = key;
@@ -97,6 +98,7 @@ export class DeckStack {
                 this.scene.playStack.play(card);
 
                 if (key <= 4) {
+                    this.scene.myTurn = false;
                     this.scene.socket.emit('turnEnd', { code: this.scene.code });
                 } else {
                     this.scene.skip.setVisible(true);
@@ -126,6 +128,7 @@ export class DeckStack {
                     this.scene.playStack.play(swapped);
                 });
 
+                this.scene.myTurn = false;
                 this.scene.socket.emit('turnEnd', { code: this.scene.code });
 
             }
@@ -171,6 +174,34 @@ export class DeckStack {
 
     }
 
+    pushAll(cards) {
+
+        for (const card of cards) {
+            card.type = 'deck';
+            card.key = null;
+            card.setFrame(12);
+            card.setScale(card.oScale);
+            if (this.topCard) {
+                this.topCard.off().removeAllListeners();
+            }
+            this.topCard = card;
+            this.array.push(card);
+        }
+
+        if (this.topCard) {
+            this.setDragEvents();
+        }
+
+        this.count();
+        this.order();
+
+        if (this.holdCard && this.topCard) {
+            this.holdCard.oX = this.topCard.oX;
+            this.holdCard.oY = this.topCard.oY;
+        }
+
+    }
+
     pop() {
 
         const card = this.array.pop();
@@ -209,15 +240,30 @@ export class DeckStack {
 
     }
 
+    computeAlienHoldPosition(id) {
+        const handStack = this.scene.handStacks[id];
+        const maxLen = Math.max(...handStack.array.map(row => row.length));
+        const cardW = cardConfig.SIZE * handStack.scale;
+        const rowWidth = maxLen > 0 ? maxLen * cardW + (maxLen - 1) * handStack.margin : 0;
+        const direction = handStack.x < pos.X(50) ? 1 : -1;
+        return {
+            x: handStack.x + direction * (rowWidth / 2 + handStack.margin + cardW / 2),
+            y: handStack.y
+        };
+    }
+
     alienDraw(id) {
 
         this.alienHoldCard = this.pop();
+        this.alienHoldId = id;
 
         this.alienHoldCard.setDepth(1);
 
+        const { x, y } = this.computeAlienHoldPosition(id);
+
         this.alienHoldCard.tween({
-            x: this.scene.handStacks[id].x,
-            y: this.scene.handStacks[id].y - handConfig.LABEL_Y_OFFSET,
+            x,
+            y,
             scaleX: cardConfig.ALIEN_SCALE,
             scaleY: cardConfig.ALIEN_SCALE,
             alpha: uiConfig.SELECTED_ALPHA,
@@ -227,6 +273,18 @@ export class DeckStack {
 
         this.alienHoldCard.highlight(this.scene.players[id].color);
 
+    }
+
+    repositionAlienHold() {
+        if (!this.alienHoldCard || !this.alienHoldId) return;
+        if (!this.scene.handStacks[this.alienHoldId]) return;
+        const { x, y } = this.computeAlienHoldPosition(this.alienHoldId);
+        this.alienHoldCard.tween({
+            x,
+            y,
+            duration: 200,
+            ease: 'Quart.out'
+        });
     }
 
     count(delta = 0) {
