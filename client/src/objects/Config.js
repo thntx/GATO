@@ -15,7 +15,7 @@ export const cardConfig = {
 export const deckConfig = {
     X: pos.X(50),
     Y: pos.Y(15),
-    LENGTH: 92,
+    PER_PLAYER: 23,
 };
 
 export const playConfig = {

@@ -8,9 +8,11 @@ export class DeckStack {
         this.scene = scene;
         this.array = [];
 
-        this.counter = new Button(scene, deckConfig.X - pos.Y(9), deckConfig.Y - pos.Y(9), pos.Y(6), pos.Y(6), uiConfig.COLOR, deckConfig.LENGTH, pos.Y(3), 'bold', 'white');
+        const deckLength = Object.keys(scene.players).length * deckConfig.PER_PLAYER;
 
-        for (let i = 0; i < deckConfig.LENGTH; i ++) {
+        this.counter = new Button(scene, deckConfig.X - pos.Y(9), deckConfig.Y - pos.Y(9), pos.Y(6), pos.Y(6), uiConfig.COLOR, deckLength, pos.Y(3), 'bold', 'white');
+
+        for (let i = 0; i < deckLength; i ++) {
             this.push(new Card(scene, deckConfig.X, deckConfig.Y, cardConfig.SCALE, null, 'deck', false));
         }
 

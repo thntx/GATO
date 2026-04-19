@@ -46,19 +46,10 @@ const COLORS = [
   0x7024ff
 ]
 
-const DECK = [
-  0, 0, 0, 0, 0, 0, 0, 0,
-  1, 1, 1, 1, 1, 1, 1, 1,
-  2, 2, 2, 2, 2, 2, 2, 2,
-  3, 3, 3, 3, 3, 3, 3, 3,
-  4, 4, 4, 4, 4, 4, 4, 4,
-  5, 5, 5, 5, 5, 5, 5, 5,
-  6, 6, 6, 6, 6, 6, 6, 6,
-  7, 7, 7, 7, 7, 7, 7, 7,
-  8, 8, 8, 8, 8, 8, 8, 8,
-  9, 9, 9, 9, 9, 9, 9, 9,
-  10, 10, 10, 10, 10, 10, 10, 10,
-  11, 11, 11, 11
+const DECK_PER_PLAYER = [
+  0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
+  5, 5, 6, 6, 7, 7, 8, 8, 9, 9,
+  10, 10, 11
 ];
 
 
@@ -183,7 +174,10 @@ io.on('connection', (socket) => {
     const code = data.code;
     const room = rooms[code];
 
-    room.deck = shuffle([...DECK]);
+    const playerCount = Object.keys(room.players).length;
+    const deck = [];
+    for (let i = 0; i < playerCount; i++) deck.push(...DECK_PER_PLAYER);
+    room.deck = shuffle(deck);
     room.cats = 0;
     room.play = [];
     room.state = 1;
