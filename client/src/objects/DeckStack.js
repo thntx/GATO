@@ -42,15 +42,20 @@ export class DeckStack {
                 this.scene.socket.emit('drawRequest', { code: this.scene.code }, (key) => {
                     card.key = key;
                     this.scene.playStack.setDropZone(key != 11);
+                    if (card.dragging && card.frame.name == 12) {
+                        card.flip(true);
+                    }
                 });
             } else {
                 this.scene.playStack.setDropZone(card.key != 11);
+                if (card.key != null) {
+                    card.flip(true);
+                }
             }
 
             this.scene.handStack.setDropZone(true);
 
-            card.flip(true)
-                .setDepth(1);
+            card.setDepth(1);
 
         });
 
