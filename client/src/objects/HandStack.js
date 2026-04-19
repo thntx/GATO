@@ -1,4 +1,5 @@
 import { Card } from './Card.js';
+import { Button } from './Button.js';
 import { pos, deckConfig, handConfig, cardConfig, uiConfig } from './Config.js';
 
 export class HandStack {
@@ -17,6 +18,15 @@ export class HandStack {
         for (let i = 0; i < handConfig.ROWS; i ++) {
             this.array.push([]);
         }
+
+        const handH = handConfig.ROWS * cardConfig.SIZE * this.scale + (handConfig.ROWS - 1) * this.margin;
+        const labelW = 2 * cardConfig.SIZE * this.scale + this.margin;
+        const labelFont = labelW / 7;
+        const labelH = labelFont * 1.4;
+        const labelGap = pos.Y(1);
+        const labelY = this.y - handH / 2 - labelGap - labelH / 2;
+        const player = scene.players[id];
+        this.nickLabel = new Button(scene, this.x, labelY, labelW, labelH, player.color, player.nick, labelFont, 'bold', 'white');
     }
 
     setOut() {

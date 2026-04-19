@@ -60,8 +60,8 @@ export class PlayStack {
 
         const catCardW = cardConfig.SIZE * cardConfig.ALIEN_SCALE;
         const catStride = catCardW + handConfig.ALIEN_MARGIN;
-        const catStartX = pos.X(4) + catCardW / 2;
         const catStartY = pos.Y(6);
+        const catStartX = catStartY;
 
         const deckCards = [];
         for (const card of deck) {

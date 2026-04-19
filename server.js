@@ -19,7 +19,11 @@ const io = require('socket.io')(server, {
   }
 });
 
-const CLIENT_DIR = path.join(__dirname, './client');
+const fs = require('fs');
+let CLIENT_DIR = path.join(__dirname, './client');
+if (fs.existsSync(path.join(__dirname, './client/dist'))) {
+  CLIENT_DIR = path.join(__dirname, './client/dist');
+}
 
 app.use(express.static(CLIENT_DIR));
 

@@ -26,9 +26,9 @@ export const playConfig = {
 const HAND_X_MAIN = pos.X(50);
 const HAND_X_OFFSET = pos.X(30);
 const HAND_Y_MAIN = pos.Y(82);
-const HAND_Y_UP = pos.Y(28);
+const HAND_Y_UP = pos.Y(25);
 const HAND_Y_CENTER = pos.Y(40);
-const HAND_Y_DOWN = pos.Y(52);
+const HAND_Y_DOWN = pos.Y(55);
 
 export const handConfig = {
     X: [[HAND_X_MAIN, HAND_X_MAIN + HAND_X_OFFSET], 

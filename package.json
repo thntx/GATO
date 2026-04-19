@@ -5,7 +5,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "dev": "cd client && vite"
+    "dev": "cd client && vite",
+    "build": "cd client && vite build"
   },
   "keywords": [],
   "author": "",
