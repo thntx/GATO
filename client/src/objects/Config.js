@@ -7,9 +7,9 @@ export const pos = {
 }
 
 export const cardConfig = {
-    SIZE: 1000,
-    SCALE: 0.15,
-    ALIEN_SCALE: 0.1,
+    SIZE: 500,
+    SCALE: 0.3,
+    ALIEN_SCALE: 0.2,
 };
 
 export const deckConfig = {
