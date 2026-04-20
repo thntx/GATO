@@ -355,17 +355,29 @@ io.on('connection', (socket) => {
     const play = room.play;
 
     const card = room.players[id].hand[i].splice(j, 1)[0];
+    const prevTop = play[play.length - 1];
+    // A normal (non-CAT) copy is only legal if the current discard top matches
+    // AND it is not itself already a successful copy. This prevents multiple
+    // players from all copying the same rank in a row: only the first copy on
+    // top of a freshly-thrown card counts; any subsequent copy on top of that
+    // one is illegal. If an illegal copy is played, its entry is NOT marked as
+    // a copy, so the next matching card played on top of it can be legal again.
+    const isLegalNormalCopy = card !== 11 && prevTop && card === prevTop.key && !prevTop.isCopy;
+
     play.push({
       key: card,
-      id: socket.id
+      id: socket.id,
+      isCopy: isLegalNormalCopy
     });
 
     const copierNick = nick(rooms, code, socket.id);
     const targetNick = nick(rooms, code, id);
-    const topCard = play[play.length - 2];
-    const correct = topCard && card === topCard.key;
+    const topCard = prevTop;
+    const correct = card === 11
+      ? (topCard && card === topCard.key) // CAT: logged as before; actual penalty logic below
+      : isLegalNormalCopy;
 
-    log(code, `COPY         ${copierNick} copied ${targetNick}'s hand[${i}][${j}] = [${card}] | discard top was [${topCard ? topCard.key : 'none'}] | ${correct ? 'CORRECT' : 'WRONG'}`);
+    log(code, `COPY         ${copierNick} copied ${targetNick}'s hand[${i}][${j}] = [${card}] | discard top was [${topCard ? topCard.key : 'none'}]${topCard && topCard.isCopy ? ' (already a copy)' : ''} | ${correct ? 'CORRECT' : 'WRONG'}`);
     callback(card);
     everyone('copy', { id, card, i, j }, code, socket.id);
 
@@ -376,7 +388,7 @@ io.on('connection', (socket) => {
     // Si no és un gat:
     if (card !== 11) {
       // Si t'has equivocat, penca 2:
-      if (!top || card !== top.key) {
+      if (!isLegalNormalCopy) {
         log(code, `PENALTY      ${copierNick} wrong copy → +2 cards`);
         for (let i = 0; i < 2; i++) {
           await sleep(200);
@@ -394,8 +406,18 @@ io.on('connection', (socket) => {
       }
       // Si ho és:
     } else {
+      // CAT rules:
+      //  - A "doble" (valid pair to discard a CAT onto) only exists when the
+      //    top card is a successful copy (top.isCopy === true). Two cards of
+      //    the same rank that landed on the pile via normal plays do NOT form
+      //    a doble. An illegal copy (isCopy:false) covering a real doble also
+      //    invalidates it (the doble is considered consumed/covered).
+      //  - The CAT thrower must not have participated in the doble, i.e.
+      //    socket.id must differ from top.id and bottom.id.
+      //  - Rule "no dobles con gatos" is enforced upstream: isCopy is never
+      //    set to true for a CAT, so a CAT can never be part of a doble.
       // Si t'has equivocat, penca 3:
-      if (!top || !bottom || top.key !== bottom.key || top.id == socket.id || bottom.id == socket.id) {
+      if (!top || !bottom || !top.isCopy || top.id == socket.id || bottom.id == socket.id) {
         log(code, `PENALTY      ${copierNick} wrong CAT copy → +3 cards`);
         for (let i = 0; i < 3; i++) {
           await sleep(200);
@@ -718,6 +740,7 @@ function advanceTurn(code, endingId) {
     const playersWithCats = Object.values(room.players)
       .filter(p => p.hand.flat().includes(11)).length;
 
+    const gameScores = {};
     for (const [id, p] of Object.entries(room.players)) {
       const cards = p.hand.flat();
       const cats = cards.filter(v => v === 11).length;
@@ -730,6 +753,7 @@ function advanceTurn(code, endingId) {
       const score = nonCatSum + catScore;
       const before = p.points ?? 0;
       p.points = before + score;
+      gameScores[id] = score;
       log(code, `SCORE        ${nick(rooms, code, id)} hand=${JSON.stringify(p.hand)} cats=${cats} catScore=${catScore} score=${score} before=${before} total=${p.points}`);
     }
 
@@ -740,7 +764,8 @@ function advanceTurn(code, endingId) {
           hand: p.hand,
           color: p.color,
           points: p.points,
-          leader: p.leader
+          leader: p.leader,
+          score: gameScores[id]
         }])
       )
     }, code);

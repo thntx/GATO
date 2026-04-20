@@ -245,6 +245,15 @@ export class Game extends Phaser.Scene {
             this.players = data.players;
         });
 
+        // If the leader starts a new game while this client is still showing
+        // Game Over (i.e. they never pressed "Back to Room"), the server emits
+        // 'start' but this scene isn't listening via Lobby. Without this
+        // handler, clientReady never fires and the new game stalls forever for
+        // everyone. Restart the Game scene directly with the latest players.
+        this.socket.on('start', () => {
+            this.scene.start('Game', { socket: this.socket, code: this.code, players: this.players });
+        });
+
         this.events.on('shutdown', () => {
             this.socket.off('turnStart');
             this.socket.off('deal');
@@ -260,6 +269,7 @@ export class Game extends Phaser.Scene {
             this.socket.off('lastRound');
             this.socket.off('gameEnd');
             this.socket.off('playerUpdate');
+            this.socket.off('start');
         });
     }
 
@@ -287,12 +297,15 @@ export class Game extends Phaser.Scene {
             // Title
             new Button(this, pos.X(50), pos.Y(12), pos.X(35), pos.Y(12), uiConfig.COLOR, 'GAME OVER', pos.Y(8), 'bold', 'white').setDepth(31);
 
-            // Player results sorted by hand total (lowest wins)
+            // Player results sorted by this game's score (lowest wins).
+            // Use the server-computed score so CATs are valued correctly
+            // (+10 each if multiple players hold CATs, -10 for the first and
+            // +10 for each additional if only one player holds CATs).
             const results = Object.entries(playersData).map(([id, p]) => ({
                 id,
                 nick: p.nick,
                 color: p.color,
-                score: p.hand.flat().reduce((sum, v) => sum + v, 0),
+                score: p.score ?? p.hand.flat().reduce((sum, v) => sum + v, 0),
                 total: p.points ?? 0
             })).sort((a, b) => a.score - b.score);
 

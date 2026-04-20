@@ -39,6 +39,29 @@ export class HandStack {
     }
 
     reveal(hand, startDelay = 0, delayPerCard = 300) {
+        // Ensure client visual state matches server hand before revealing.
+        // If any card the server has isn't present in this.array (e.g. a
+        // deal event arrived while deckStack was out of sync and silently
+        // failed, or a late-game +3 penalty's deals raced with gameEnd),
+        // create a face-down placeholder so it still gets revealed. Without
+        // this, server cards at missing positions are skipped entirely.
+        let createdMissing = false;
+        for (let i = 0; i < hand.length; i++) {
+            if (!this.array[i]) this.array[i] = [];
+            for (let j = 0; j < hand[i].length; j++) {
+                if (!this.array[i][j]) {
+                    const placeholder = new Card(this.scene, this.x, this.y, this.scale, null, 'hand', false);
+                    placeholder.id = this.id;
+                    placeholder.oScale = this.scale;
+                    this.array[i][j] = placeholder;
+                    createdMissing = true;
+                }
+            }
+        }
+        if (createdMissing) {
+            this.order();
+        }
+
         let cardIdx = 0;
         for (let i = 0; i < hand.length; i++) {
             for (let j = 0; j < hand[i].length; j++) {
