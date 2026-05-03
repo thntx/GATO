@@ -1,2 +1,1 @@
-Currently, everything is pretty neat; there are a few bugs tho:
-- Sometimes cards keep flipped when peeked at peek phase
+Currently, everything is pretty neat.

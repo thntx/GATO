@@ -183,7 +183,7 @@ export class HandStack {
 
                 this.scene.socket.emit('copyRequest', { code: this.scene.code, id: this.id, i: card.i, j: card.j }, (key) => {
                     card.key = key;
-                    this.scene.playStack.play(this.pop(card.i, card.j));
+                    this.scene.playStack.play(this.pop(card.i, card.j), true);
                 });
 
             } else if (gameObject.type == 'hand') {
@@ -283,7 +283,7 @@ export class HandStack {
     alienCopy(key, i, j) {
         const card = this.pop(i, j);
         card.key = key
-        this.scene.playStack.play(card);
+        this.scene.playStack.play(card, true);
     }
 
     pop(i, j) {

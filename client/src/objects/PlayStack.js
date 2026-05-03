@@ -8,11 +8,31 @@ export class PlayStack {
         this.scene = scene;
         this.array = [];
         this.cats = 0;
+        this.topIsCopy = false;
 
         this.setDefaultCard();
+        this.setCopyIndicator();
     }
 
-    play(card) {
+    setCopyIndicator() {
+        const cardSize = pos.Y(6);
+        const cardScale = cardSize / cardConfig.SIZE;
+        const offset = cardSize / 2;
+        const x = playConfig.X - pos.Y(9);
+        const y = playConfig.Y - pos.Y(9);
+
+        const bottom = this.scene.add.sprite(-offset / 2, offset / 2, 'cards', 12).setScale(cardScale);
+        const top = this.scene.add.sprite(offset / 2, -offset / 2, 'cards', 12).setScale(cardScale);
+        this.copyIndicator = this.scene.add.container(x, y, [bottom, top])
+            .setVisible(false)
+            .setDepth(2);
+    }
+
+    play(card, isCopyAttempt = false) {
+
+        const newTopIsCopy = isCopyAttempt && card.key !== 11
+            && this.topCard && this.topCard.key === card.key
+            && !this.topIsCopy;
 
         this.array.push(card);
 
@@ -29,6 +49,9 @@ export class PlayStack {
             this.bottomCard.setDraggable(false);
             this.bottomCard.setDropZone(false);
         }
+
+        this.topIsCopy = newTopIsCopy;
+        this.copyIndicator.setVisible(this.topIsCopy);
 
         card.tween({
             x: playConfig.X,
