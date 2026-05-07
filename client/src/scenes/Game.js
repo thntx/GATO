@@ -18,6 +18,7 @@ export class Game extends Phaser.Scene {
 
     preload() {
         this.load.spritesheet('cards', 'assets/spritesheet.png', {frameWidth: cardConfig.SIZE, frameHeight: cardConfig.SIZE});
+        this.load.audio('sevenOnSix', 'assets/sounds/seven_on_six.mp3');
     }
 
     create() {
@@ -65,6 +66,13 @@ export class Game extends Phaser.Scene {
         this.outPlayers = [];
         this.standEnabled = false;
 
+        this.peekPhase = true;
+        this.peekCounts = {};
+        for (const stackId of Object.keys(this.handStacks)) {
+            this.handStacks[stackId].setActive(true);
+            this.peekCounts[stackId] = 0;
+        }
+
         this.socket.emit('clientReady', { code: this.code });
 
         this.socket.on('turnStart', (data) => {
@@ -78,6 +86,12 @@ export class Game extends Phaser.Scene {
 
             this.turnId = id;
             this.myTurn = id == this.socket.id;
+
+            this.peekPhase = false;
+
+            for (const stackId of Object.keys(this.handStacks)) {
+                this.handStacks[stackId].setActive(stackId === id);
+            }
 
             this.copy = true;
             this.peeks = { self: 0, alien: 0 };
@@ -109,6 +123,8 @@ export class Game extends Phaser.Scene {
 
             this.handStacks[peekedId].highlight(peekedI, peekedJ, this.players[peekerId].color);
 
+            this.recordPeek(peekerId);
+
         });
 
         this.socket.on('draw', (data) => {
@@ -135,8 +151,8 @@ export class Game extends Phaser.Scene {
             const tradedJ = data.tradedJ;
 
             const temp = this.handStacks[traderId].get(traderI, traderJ);
-            this.handStacks[traderId].swap(this.handStacks[tradedId].get(tradedI, tradedJ), traderI, traderJ);
-            this.handStacks[tradedId].swap(temp, tradedI, tradedJ);
+            this.handStacks[traderId].swap(this.handStacks[tradedId].get(tradedI, tradedJ), traderI, traderJ, 400);
+            this.handStacks[tradedId].swap(temp, tradedI, tradedJ, 400);
 
         });
 
@@ -170,6 +186,12 @@ export class Game extends Phaser.Scene {
 
             this.handStacks[id].alienCopy(card, i, j);
 
+        });
+
+        this.socket.on('sound', (data) => {
+            if (data && data.name && this.cache.audio.has(data.name)) {
+                this.sound.play(data.name);
+            }
         });
 
         this.socket.on('reshuffle', (data) => {
@@ -265,12 +287,21 @@ export class Game extends Phaser.Scene {
             this.socket.off('swap');
             this.socket.off('copy');
             this.socket.off('reshuffle');
+            this.socket.off('sound');
             this.socket.off('standEnable');
             this.socket.off('lastRound');
             this.socket.off('gameEnd');
             this.socket.off('playerUpdate');
             this.socket.off('start');
         });
+    }
+
+    recordPeek(peekerId) {
+        if (!this.peekPhase) return;
+        this.peekCounts[peekerId] = (this.peekCounts[peekerId] || 0) + 1;
+        if (this.peekCounts[peekerId] >= 2 && this.handStacks[peekerId]) {
+            this.handStacks[peekerId].setActive(false);
+        }
     }
 
     showGameOver(playersData) {
@@ -301,20 +332,31 @@ export class Game extends Phaser.Scene {
             // Use the server-computed score so CATs are valued correctly
             // (+10 each if multiple players hold CATs, -10 for the first and
             // +10 for each additional if only one player holds CATs).
+            // Tiebreaker on equal score: a player who ran out of cards
+            // ('empty') outranks a player who stood ('stand'); anyone else
+            // (didn't go out) ranks last. Players tied on both score and
+            // out-bucket all share the trophy.
+            const order = (r) => r.outBy === 'empty' ? 0 : r.outBy === 'stand' ? 1 : 2;
             const results = Object.entries(playersData).map(([id, p]) => ({
                 id,
                 nick: p.nick,
                 color: p.color,
                 score: p.score ?? p.hand.flat().reduce((sum, v) => sum + v, 0),
-                total: p.points ?? 0
-            })).sort((a, b) => a.score - b.score);
+                total: p.points ?? 0,
+                outBy: p.outBy
+            })).sort((a, b) => a.score !== b.score ? a.score - b.score : order(a) - order(b));
+
+            const top = results[0];
+            const topOrder = order(top);
+            const isWinner = (r) => r.score === top.score && order(r) === topOrder;
 
             for (let i = 0; i < results.length; i++) {
                 const r = results[i];
-                const label = i === 0
+                const winner = isWinner(r);
+                const label = winner
                     ? `${r.nick}  —  ${r.score} pts  (${r.total} total)  🏆`
                     : `${r.nick}  —  ${r.score} pts  (${r.total} total)`;
-                new Button(this, pos.X(50), pos.Y(30) + i * pos.Y(11), pos.X(50), pos.Y(9), r.color, label, pos.Y(4), i === 0 ? 'bold' : '', 'white').setDepth(31);
+                new Button(this, pos.X(50), pos.Y(30) + i * pos.Y(11), pos.X(50), pos.Y(9), r.color, label, pos.Y(4), winner ? 'bold' : '', 'white').setDepth(31);
             }
 
             // Back to room

@@ -113,9 +113,11 @@ export class DeckStack {
                     if (key === 5 || key === 6) {
                         this.scene.peeks.self = 1;
                         this.scene.waitingPeek = true;
+                        this.scene.copy = true;
                     } else if (key === 7 || key === 8) {
                         this.scene.peeks.alien = 1;
                         this.scene.waitingPeek = true;
+                        this.scene.copy = true;
                     } else if (key === 9) {
                         this.scene.trade = true;
                         this.scene.waitingTrade = true;

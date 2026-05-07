@@ -50,4 +50,24 @@ export class Button extends Phaser.GameObjects.Container {
             this.disableInteractive(true);
         }
     }
+
+    setOutlined(bool, color = 0xffffff, thickness = 4, gap = 6) {
+        if (bool) {
+            if (!this.outline) {
+                const w = this.shape.width + gap * 2 + thickness;
+                const h = this.shape.height + gap * 2 + thickness;
+                this.outline = this.scene.add.rectangle(0, 0, w, h)
+                    .setRounded(uiConfig.BABEL + gap)
+                    .setFillStyle()
+                    .setStrokeStyle(thickness, color);
+                this.addAt(this.outline, 0);
+            } else {
+                this.outline.setStrokeStyle(thickness, color);
+            }
+            this.outline.setVisible(true);
+        } else if (this.outline) {
+            this.outline.setVisible(false);
+        }
+        return this;
+    }
 }

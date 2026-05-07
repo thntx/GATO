@@ -72,23 +72,37 @@ io.on('connection', (socket) => {
         state: 0, // 0: Lobby, 1: Peek phase, 2: Gameplay Loop, 3: Last Round
         players: {},
         leader: socket.id,
-        peeks: 0
+        peeks: 0,
+        history: {}
       }
       log(code, `ROOM CREATED by ${socket.id.slice(0, 6)}`);
     }
 
     const room = rooms[code];
+    if (!room.history) room.history = {};
     const players = room.players;
     const ids = Object.keys(players);
 
     if (room.state == 0) {
       if (ids.length < 5) {
+        const nick = playerNick || 'Player ' + (ids.length + 1);
+        if (Object.values(players).some(p => p.nick === nick)) {
+          log(code, `JOIN DENIED  ${socket.id.slice(0, 6)} — nick "${nick}" already taken`);
+          callback(false, 'That nickname is already in use in this room.');
+          return;
+        }
+        const restoredPoints = room.history[nick];
         players[socket.id] = {
-          nick: playerNick || 'Player ' + (ids.length + 1),
+          nick,
           color: COLORS[ids.length],
           leader: ids.length == 0,
           hand: [[], []],
-          hold: null
+          hold: null,
+          points: restoredPoints ?? 0
+        }
+        if (restoredPoints !== undefined) {
+          delete room.history[nick];
+          log(code, `REJOIN       ${nick} restored ${restoredPoints} pts`);
         }
 
         log(code, `JOIN         ${players[socket.id].nick} (${ids.length + 1}/5 players)`);
@@ -132,6 +146,9 @@ io.on('connection', (socket) => {
         promote(code, ids[0] !== id ? ids[0] : ids[1]);
       }
 
+      if (players[id]) {
+        room.history[players[id].nick] = players[id].points ?? 0;
+      }
       delete players[id];
 
       const ids = Object.keys(players);
@@ -184,8 +201,6 @@ io.on('connection', (socket) => {
     room.count.deck = 1;
     room.outPlayers = [];
     room.peeks = 0;
-    room.firstReshuffleHappened = false;
-    room.firstReshuffleRound = null;
     room.standEnabled = false;
 
     const playerNames = Object.values(room.players).map(p => p.nick).join(', ');
@@ -297,6 +312,7 @@ io.on('connection', (socket) => {
 
     log(code, `PLAY         ${nick(rooms, code, socket.id)} played card [${card}] to discard`);
     everyone('play', { card }, code, socket.id);
+    checkPlaySounds(code);
 
     if (card <= 4) {
       for (const id of ids) {
@@ -331,6 +347,7 @@ io.on('connection', (socket) => {
     log(code, `SWAP         ${nick(rooms, code, socket.id)} swapped held card into hand[${i}][${j}], discarded [${card}]`);
     callback(card);
     everyone('swap', { id: socket.id, card, i, j }, code, socket.id);
+    checkPlaySounds(code);
 
     if (card == 11) {
       log(code, `PENALTY      ${nick(rooms, code, socket.id)} swapped a CAT [11] into hand → +3 cards`);
@@ -380,6 +397,7 @@ io.on('connection', (socket) => {
     log(code, `COPY         ${copierNick} copied ${targetNick}'s hand[${i}][${j}] = [${card}] | discard top was [${topCard ? topCard.key : 'none'}]${topCard && topCard.isCopy ? ' (already a copy)' : ''} | ${correct ? 'CORRECT' : 'WRONG'}`);
     callback(card);
     everyone('copy', { id, card, i, j }, code, socket.id);
+    checkPlaySounds(code);
 
     const len = play.length;
     const top = play[len - 2];
@@ -437,7 +455,7 @@ io.on('connection', (socket) => {
 
     // If the copied player ran out of cards, mark them out.
     if (handLength(code, id) === 0) {
-      enterLastRound(code, id);
+      enterLastRound(code, id, 'empty');
     }
 
     // Server-authoritative auto-end: if the player whose turn it currently is
@@ -514,6 +532,7 @@ io.on('connection', (socket) => {
           promote(code, next);
         }
 
+        room.history[players[socket.id].nick] = players[socket.id].points ?? 0;
         delete players[socket.id];
 
         const newIds = Object.keys(players);
@@ -574,7 +593,7 @@ io.on('connection', (socket) => {
 
     log(code, `STAND        ${nick(rooms, code, socket.id)} chose to stand`);
 
-    enterLastRound(code, socket.id);
+    enterLastRound(code, socket.id, 'stand');
 
     if (rooms[code]) {
       log(code, `AUTO END     ${nick(rooms, code, socket.id)} stood on own turn → advancing turn`);
@@ -665,15 +684,9 @@ function reshuffle(code) {
   room.count.deck++;
   log(code, `RESHUFFLE    deck #${room.count.deck} | ${deck.length} cards (${catsRemoved} cats removed, total cats out: ${room.cats})`);
 
-  if (!room.firstReshuffleHappened) {
-    room.firstReshuffleHappened = true;
-    room.firstReshuffleRound = room.count.round;
-    log(code, `FIRST RESH   stand will enable on round ${room.firstReshuffleRound + 2}`);
-  }
-
 }
 
-function enterLastRound(code, outId) {
+function enterLastRound(code, outId, reason) {
 
   const room = rooms[code];
   if (!room) return;
@@ -682,6 +695,9 @@ function enterLastRound(code, outId) {
   if (room.outPlayers.includes(outId)) return;
 
   room.outPlayers.push(outId);
+  if (room.players[outId]) {
+    room.players[outId].outBy = reason;
+  }
 
   if (room.state < 3) {
     room.state = 3;
@@ -725,7 +741,7 @@ function advanceTurn(code, endingId) {
     log(code, `SKIP         ${skipped.join(', ')} (out)`);
   }
 
-  if (room.firstReshuffleHappened && !room.standEnabled && room.count.round > room.firstReshuffleRound) {
+  if (!room.standEnabled && room.count.round > 0) {
     room.standEnabled = true;
     log(code, `STAND ENABLE round ${room.count.round + 1} — players may now stand`);
     everyone('standEnable', {}, code);
@@ -765,7 +781,8 @@ function advanceTurn(code, endingId) {
           color: p.color,
           points: p.points,
           leader: p.leader,
-          score: gameScores[id]
+          score: gameScores[id],
+          outBy: p.outBy
         }])
       )
     }, code);
@@ -776,13 +793,12 @@ function advanceTurn(code, endingId) {
     room.outPlayers = [];
     room.cats = 0;
     delete room.lastRoundNum;
-    room.firstReshuffleHappened = false;
-    room.firstReshuffleRound = null;
     room.standEnabled = false;
     for (const p of Object.values(room.players)) {
       p.hand = [[], []];
       p.hold = null;
       p.ready = false;
+      delete p.outBy;
     }
 
     log(code, `ROOM RESET   back to lobby`);
@@ -847,6 +863,20 @@ function pop(code) {
   }
 
   return card;
+}
+
+function checkPlaySounds(code) {
+
+  const room = rooms[code];
+  if (!room) return;
+  const play = room.play;
+  const top = play[play.length - 1];
+  const prev = play[play.length - 2];
+
+  if (top && prev && top.key === 7 && prev.key === 6) {
+    everyone('sound', { name: 'sevenOnSix' }, code);
+  }
+
 }
 
 function handLength(code, id) {

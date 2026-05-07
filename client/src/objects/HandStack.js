@@ -29,6 +29,11 @@ export class HandStack {
         this.nickLabel = new Button(scene, this.x, labelY, labelW, labelH, player.color, player.nick, labelFont, 'bold', 'white');
     }
 
+    setActive(bool) {
+        const color = this.scene.players[this.id].color;
+        this.nickLabel.setOutlined(bool, color);
+    }
+
     setOut() {
         this.out = true;
         this.iterate((card) => {
@@ -101,6 +106,7 @@ export class HandStack {
                 });
 
                 this.scene.peekedCards.push(card);
+                this.scene.recordPeek(this.scene.socket.id);
 
                 if (this.scene.waitingPeek) {
                     this.scene.skip.setVisible(false);
@@ -201,8 +207,8 @@ export class HandStack {
                 const id = gameObject.id;
                 const i = gameObject.i;
                 const j = gameObject.j;
-                this.swap(gameObject, card.i, card.j);
-                this.scene.handStacks[id].swap(card, i, j);
+                this.swap(gameObject, card.i, card.j, 400);
+                this.scene.handStacks[id].swap(card, i, j, 400);
 
                 if (this.scene.waitingTrade) {
                     this.scene.skip.setVisible(false);
@@ -252,19 +258,19 @@ export class HandStack {
         this.setDragEvents(card);
     }
 
-    swap(card, i, j) {
+    swap(card, i, j, duration = 200) {
         const current = this.array[i][j];
 
         card.type = 'hand';
         card.oScale = this.scale;
         card.id = this.id;
-        
+
         card.setDepth(0);
 
         this.array[i][j] = card;
         this.order(() => {
             card.flip(false)
-        });
+        }, duration);
 
         this.setDragEvents(card);
 
@@ -297,7 +303,7 @@ export class HandStack {
         card.highlight(color);
     }
 
-    order(onComplete = () => {}) {
+    order(onComplete = () => {}, duration = 200) {
         if (this.scene.deckStack.alienHoldId === this.id) {
             this.scene.deckStack.repositionAlienHold();
         }
@@ -311,7 +317,7 @@ export class HandStack {
 
                 card.i = i;
                 card.j = j;
-                
+
                 card.setDepth(1);
 
                 card.tween({
@@ -320,7 +326,7 @@ export class HandStack {
                     scaleX: this.scale,
                     scaleY: this.scale,
                     alpha: 1,
-                    duration: 200,
+                    duration,
                     ease: 'Quart.out',
                     onUpdate: () => {
                         card.oX = x + j * (cardConfig.SIZE * this.scale + this.margin);
