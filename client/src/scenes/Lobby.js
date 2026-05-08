@@ -67,16 +67,29 @@ export class Lobby extends Phaser.Scene {
     createPlayerList() {
         const ids = Object.keys(this.players);
         const list = this.add.container(pos.X(50), pos.Y(20));
+        // Always use the compact sizing so the layout stays stable when a
+        // 6th or 7th player joins (no jump from the looser 2–5 sizing). The
+        // horizontal gap between the three bubbles is set to the same pixel
+        // value as the vertical gap between rows so spacings read uniformly.
+        const rowH = pos.Y(7);
+        const margin = pos.Y(1);
+        const rowStride = rowH + margin;
+        const fontSize = pos.Y(3.5);
+        const rankW = pos.X(10);
+        const labelW = pos.X(20);
+        const pointsW = pos.X(10);
+        const sideOffset = labelW / 2 + margin + rankW / 2;
         for (let i = 0; i < ids.length; i ++) {
             const id = ids[i];
             const player = this.players[id];
-            const rank = new Button(this, -pos.X(16), pos.Y(10) * i, pos.X(10), pos.Y(8), player.color, player.leader ? '😺' : '🐭', pos.Y(4), '', 'white', id != this.socket.id && this.leader ? () => {
+            const y = rowStride * i;
+            const rank = new Button(this, -sideOffset, y, rankW, rowH, player.color, player.leader ? '😺' : '🐭', fontSize, '', 'white', id != this.socket.id && this.leader ? () => {
                 this.socket.emit('promoteRequest', { code: this.code, id: id });
             } : null);
-            const label = new Button(this, 0, pos.Y(10) * i, pos.X(20), pos.Y(8), player.color, player.nick, pos.Y(4), '', 'white', id != this.socket.id && this.leader ? () => {
+            const label = new Button(this, 0, y, labelW, rowH, player.color, player.nick, fontSize, '', 'white', id != this.socket.id && this.leader ? () => {
                 this.socket.emit('leaveRequest', { code: this.code, id: id });
             } : null );
-            const points = new Button(this, pos.X(16), pos.Y(10) * i, pos.X(10), pos.Y(8), player.color, (player.points ?? 0) + 'p', pos.Y(4), '', 'white');
+            const points = new Button(this, sideOffset, y, pointsW, rowH, player.color, (player.points ?? 0) + 'p', fontSize, '', 'white');
             list.add([rank, label, points]);
         }
         return list;

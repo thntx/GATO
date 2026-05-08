@@ -2,7 +2,8 @@ import { Button } from '../objects/Button.js'
 import { DeckStack } from '../objects/DeckStack.js'
 import { PlayStack } from '../objects/PlayStack.js'
 import { HandStack } from '../objects/HandStack.js'
-import { pos, uiConfig, playConfig, cardConfig, handConfig } from '../objects/Config.js'
+import { Log } from '../objects/Log.js'
+import { pos, uiConfig, playConfig, cardConfig, handConfig, TEXT_RESOLUTION, SOUND_MS } from '../objects/Config.js'
 
 export class Game extends Phaser.Scene {
 
@@ -18,7 +19,56 @@ export class Game extends Phaser.Scene {
 
     preload() {
         this.load.spritesheet('cards', 'assets/spritesheet.png', {frameWidth: cardConfig.SIZE, frameHeight: cardConfig.SIZE});
-        this.load.audio('sevenOnSix', 'assets/sounds/seven_on_six.mp3');
+        this.load.audio('sixSeven', 'assets/sounds/six_seven.mp3');
+        // Per-action sounds with you/other variants. Keys are camelCase to match
+        // the playActionSound helper's lookup. Files are <action>.wav under
+        // assets/sounds/, with a you_ / other_ prefix per actor relationship.
+        for (const action of ['copy', 'fail', 'peek', 'unpeek', 'trade', 'turn', 'take', 'play', 'hand', 'get']) {
+            const cap = action.charAt(0).toUpperCase() + action.slice(1);
+            this.load.audio('you' + cap, `assets/sounds/you_${action}.wav`);
+            this.load.audio('other' + cap, `assets/sounds/other_${action}.wav`);
+        }
+        this.load.audio('show', 'assets/sounds/show.wav');
+        this.load.audio('gameOver', 'assets/sounds/game_over.wav');
+    }
+
+    // Play a per-action sound, picking the you_/other_ variant based on whether
+    // the actor is the local player. Called from socket handlers and local
+    // emits so the UX is consistent regardless of who triggered the action.
+    playActionSound(action, actorId) {
+        if (!this.sound || !this.cache || !this.cache.audio) return;
+        const isYou = actorId === this.socket.id;
+        const key = (isYou ? 'you' : 'other') + action.charAt(0).toUpperCase() + action.slice(1);
+        if (this.cache.audio.has(key)) this.sound.play(key);
+    }
+
+    // Play a sound by exact key (no you/other distinction).
+    playSound(name) {
+        if (!this.sound || !this.cache || !this.cache.audio) return;
+        if (this.cache.audio.has(name)) this.sound.play(name);
+    }
+
+    // Lock the actor's UI for a span of ms — used right after the local
+    // player emits a request, so they can't fire a follow-up action before
+    // the corresponding sound has played out. Pointerdown handlers and
+    // button callbacks early-return when this.frozen is true. The server
+    // independently sleeps for the same span between events, so by the time
+    // the freeze ends the next event has already arrived (or is about to).
+    //
+    // Cumulative: if a callback learns that the consequences of the action
+    // are longer than first assumed (e.g. a CAT was just displaced and +3
+    // take sounds are about to arrive), it can call freeze() again to extend
+    // the expiry. The shorter delayedCalls fire first but only release the
+    // freeze if the latest expiry has already been reached.
+    freeze(ms) {
+        const expiry = this.time.now + ms;
+        this.freezeExpiry = Math.max(this.freezeExpiry || 0, expiry);
+        this.frozen = true;
+        this.time.delayedCall(ms, () => {
+            if (this.time.now >= (this.freezeExpiry || 0) - 5) {
+                this.frozen = false;
+            }
+        });
     }
 
     create() {
@@ -26,23 +76,42 @@ export class Game extends Phaser.Scene {
         this.turn = new Button(this, pos.X(7), pos.Y(82), pos.X(10), pos.Y(5), uiConfig.COLOR, 'Turn 1', pos.Y(3), 'bold', 'white');
         this.round = new Button(this, pos.X(7), pos.Y(88), pos.X(10), pos.Y(5), uiConfig.COLOR, 'Round 1', pos.Y(3), 'bold', 'white');
         this.deck = new Button(this, pos.X(7), pos.Y(94), pos.X(10), pos.Y(5), uiConfig.COLOR, 'Deck 1', pos.Y(3), 'bold', 'white');
-        
-        this.skip = new Button(this, playConfig.X, playConfig.Y + pos.Y(12), pos.X(10), pos.Y(5), uiConfig.COLOR, 'SKIP', pos.Y(3), 'bold', 'white', () => {
+
+        // Aliens sit at HAND_Y_CENTER in 2- and 3-player games (the first two
+        // rows of handConfig.Y put every non-self player at the same center y).
+        // In those layouts the playstack reads better when it's vertically
+        // aligned with the middle of the alien card rows rather than below
+        // them. With 3-4 aliens the layout fans them around the screen, so
+        // fall back to the default playConfig.Y to leave room for the deck.
+        const alienCount = Object.keys(this.players).length - 1;
+        const playY = alienCount <= 2 ? handConfig.Y[alienCount - 1][1] : playConfig.Y;
+
+        // Frozen-UI flag for the actor: true while the local player's last
+        // emitted action's sound is still playing. Pointerdown handlers and
+        // button callbacks early-return on this so the actor can't queue the
+        // next request before the previous sound finishes — keeps the
+        // sound/event ordering aligned with the server's sleep-paced emits.
+        this.frozen = false;
+
+        this.skip = new Button(this, playConfig.X, playY + pos.Y(10), cardConfig.SIZE * cardConfig.SCALE, pos.Y(5), uiConfig.COLOR, 'SKIP', pos.Y(3), 'bold', 'white', () => {
+            if (this.frozen) return;
             this.myTurn = false;
             this.socket.emit('turnEnd', { code: this.code });
             this.skip.setVisible(false);
         }).setVisible(false);
 
-        const seventhCardRightEdge = pos.X(50) + (7 * cardConfig.SIZE * cardConfig.SCALE + 6 * handConfig.MARGIN) / 2;
-        const standX = (seventhCardRightEdge + pos.X(100)) / 2;
-        this.stand = new Button(this, standX, pos.Y(82), pos.X(10), pos.Y(5), uiConfig.COLOR, 'STAND', pos.Y(3), 'bold', 'white', () => {
+        // STAND sits directly above the turn indicator (turn is at pos.Y(82),
+        // stand at pos.Y(76)) so it groups with the round/deck stack on the
+        // left and frees up the right side for the action log.
+        this.stand = new Button(this, pos.X(7), pos.Y(76), pos.X(10), pos.Y(5), uiConfig.COLOR, 'STAND', pos.Y(3), 'bold', 'white', () => {
+            if (this.frozen) return;
             this.socket.emit('standRequest', { code: this.code });
             this.stand.setVisible(false);
         }).setVisible(false);
 
         this.deckStack = new DeckStack(this);
 
-        this.playStack = new PlayStack(this);
+        this.playStack = new PlayStack(this, playConfig.X, playY);
         
         this.handStacks = {};
 
@@ -55,6 +124,14 @@ export class Game extends Phaser.Scene {
         }
 
         this.handStack = this.handStacks[this.socket.id];
+
+        // Action log — fixed bottom-right viewport, scrollable, never trims
+        // entries. Width is 4/5 of the original sizing; height is computed
+        // from the row stride so exactly 6 rows fit before the top edge cuts
+        // older entries off.
+        const logW = pos.X(20);
+        const logH = Log.heightForRows(6);
+        this.log = new Log(this, pos.X(99) - logW, pos.Y(99) - logH, logW, logH);
 
         this.copy = false;
         this.peeks = { self: 2, alien: 0 };
@@ -103,6 +180,8 @@ export class Game extends Phaser.Scene {
 
             this.stand.setVisible(this.standEnabled && this.myTurn && !this.outPlayers.includes(this.socket.id));
 
+            this.playActionSound('turn', id);
+
         });
 
         this.socket.on('deal', (data) => {
@@ -111,6 +190,10 @@ export class Game extends Phaser.Scene {
             const line = data.line;
 
             this.handStacks[id].draw(line);
+            // Initial 4-card deal at game start (still in peek phase) uses
+            // the dedicated "get" sound; deals during gameplay (penalty
+            // cards from 0-4 plays, wrong copies, CAT swaps) use "take".
+            this.playActionSound(this.peekPhase ? 'get' : 'take', id);
 
         });
 
@@ -121,9 +204,22 @@ export class Game extends Phaser.Scene {
             const peekedI = data.peekedI;
             const peekedJ = data.peekedJ;
 
+            const peekedCard = this.handStacks[peekedId].get(peekedI, peekedJ);
             this.handStacks[peekedId].highlight(peekedI, peekedJ, this.players[peekerId].color);
 
             this.recordPeek(peekerId);
+
+            this.playActionSound('peek', peekerId);
+            // Highlight (yoyo, 1000ms each way) ends ~2000ms after peek; play
+            // the unpeek sound at 1000ms, halfway through, when the visual
+            // starts fading back to neutral. Skip the sound if the card has
+            // since moved off the hand (copied/swapped to the playstack)
+            // because there's no longer an unpeek visual to accompany.
+            this.time.delayedCall(1000, () => {
+                if (peekedCard && peekedCard.type === 'hand') {
+                    this.playActionSound('unpeek', peekerId);
+                }
+            });
 
         });
 
@@ -132,6 +228,7 @@ export class Game extends Phaser.Scene {
             const id = data.id;
 
             this.deckStack.alienDraw(id);
+            this.playActionSound('hand', id);
 
         });
 
@@ -149,21 +246,30 @@ export class Game extends Phaser.Scene {
             const tradedI = data.tradedI;
             const traderJ = data.traderJ;
             const tradedJ = data.tradedJ;
+            const actorId = data.actorId;
 
-            const temp = this.handStacks[traderId].get(traderI, traderJ);
-            this.handStacks[traderId].swap(this.handStacks[tradedId].get(tradedI, tradedJ), traderI, traderJ, 400);
-            this.handStacks[tradedId].swap(temp, tradedI, tradedJ, 400);
+            const traderCard = this.handStacks[traderId].get(traderI, traderJ);
+            const tradedCard = this.handStacks[tradedId].get(tradedI, tradedJ);
+            // Cancel any local drag on either card before swapping — otherwise
+            // the cursor-tracking drag handler fights the order() tween that
+            // moves the card into its new hand slot.
+            traderCard.cancelDrag();
+            tradedCard.cancelDrag();
+            this.handStacks[traderId].swap(tradedCard, traderI, traderJ, 400);
+            this.handStacks[tradedId].swap(traderCard, tradedI, tradedJ, 400);
+
+            this.playActionSound('trade', actorId);
 
         });
 
         this.socket.on('play', (data) => {
 
             const card = data.card;
-
-            console.log(card);
+            const actorId = data.actorId;
 
             this.playStack.alienPlay(card);
-            
+            this.playActionSound('play', actorId);
+
         });
 
         this.socket.on('swap', (data) => {
@@ -174,6 +280,10 @@ export class Game extends Phaser.Scene {
             const j = data.j;
 
             this.handStacks[id].alienSwap(card, i, j);
+            // Swap discards a card to the playstack, same as a play. Reuse
+            // the play sound (no separate "swap" sound exists), keyed on the
+            // swapper as the actor.
+            this.playActionSound('play', id);
 
         });
 
@@ -183,8 +293,11 @@ export class Game extends Phaser.Scene {
             const card = data.card;
             const i = data.i;
             const j = data.j;
+            const copierId = data.copierId;
+            const success = data.success;
 
-            this.handStacks[id].alienCopy(card, i, j);
+            this.handStacks[id].alienCopy(card, i, j, copierId);
+            this.playActionSound(success ? 'copy' : 'fail', copierId);
 
         });
 
@@ -192,6 +305,11 @@ export class Game extends Phaser.Scene {
             if (data && data.name && this.cache.audio.has(data.name)) {
                 this.sound.play(data.name);
             }
+        });
+
+        this.socket.on('logEntry', (data) => {
+            if (!this.log || !data || !data.segments) return;
+            this.log.addEntry(data.segments, data.color);
         });
 
         this.socket.on('reshuffle', (data) => {
@@ -232,18 +350,9 @@ export class Game extends Phaser.Scene {
                 this.skip.setVisible(false);
             }
 
-            const name = this.players[eliminatedId]?.nick || 'A player';
-            const msg = isMe ? 'You went out!\nLast Round!' : `${name} went out!\nLast Round!`;
-
-            const notice = this.add.text(pos.X(50), pos.Y(50), msg, {
-                fontSize: pos.Y(4) + 'px',
-                color: '#ffffff',
-                align: 'center',
-                backgroundColor: '#000000cc',
-                padding: { x: 20, y: 12 }
-            }).setOrigin(0.5).setDepth(20);
-
-            this.time.delayedCall(3000, () => { if (notice.active) notice.destroy(); });
+            // The "<player> stood" / "<player> ran out of cards" line in the
+            // action log replaces the old centered popup notice — same info
+            // without the modal.
 
         });
 
@@ -288,6 +397,7 @@ export class Game extends Phaser.Scene {
             this.socket.off('copy');
             this.socket.off('reshuffle');
             this.socket.off('sound');
+            this.socket.off('logEntry');
             this.socket.off('standEnable');
             this.socket.off('lastRound');
             this.socket.off('gameEnd');
@@ -325,8 +435,11 @@ export class Game extends Phaser.Scene {
             // Overlay
             this.add.rectangle(pos.X(50), pos.Y(50), pos.X(100), pos.Y(100), 0x000000, 0.75).setDepth(30);
 
-            // Title
-            new Button(this, pos.X(50), pos.Y(12), pos.X(35), pos.Y(12), uiConfig.COLOR, 'GAME OVER', pos.Y(8), 'bold', 'white').setDepth(31);
+            this.playSound('gameOver');
+
+            // Title — slightly shorter than before so the result strip can
+            // start higher and clear the Go-to buttons even at 7 players.
+            new Button(this, pos.X(50), pos.Y(10), pos.X(35), pos.Y(10), uiConfig.COLOR, 'GAME OVER', pos.Y(6), 'bold', 'white').setDepth(31);
 
             // Player results sorted by this game's score (lowest wins).
             // Use the server-computed score so CATs are valued correctly
@@ -350,24 +463,41 @@ export class Game extends Phaser.Scene {
             const topOrder = order(top);
             const isWinner = (r) => r.score === top.score && order(r) === topOrder;
 
+            // Each result row is three equal-sized bubbles (name, round
+            // points, total points), separated by the same pixel gap that
+            // sits between rows so spacings read uniformly. Sized to always
+            // fit a 7-player game above the Go-to buttons at pos.Y(80) — the
+            // start y is high enough that even seven rows clear them.
+            const rowH = pos.Y(7);
+            const margin = pos.Y(1);
+            const rowStride = rowH + margin;
+            const rowFont = pos.Y(3.5);
+            const totalW = pos.X(44);
+            const bubbleW = (totalW - 2 * margin) / 3;
+            const sideOffset = bubbleW + margin;
+            const startY = pos.Y(20);
             for (let i = 0; i < results.length; i++) {
                 const r = results[i];
                 const winner = isWinner(r);
-                const label = winner
-                    ? `${r.nick}  —  ${r.score} pts  (${r.total} total)  🏆`
-                    : `${r.nick}  —  ${r.score} pts  (${r.total} total)`;
-                new Button(this, pos.X(50), pos.Y(30) + i * pos.Y(11), pos.X(50), pos.Y(9), r.color, label, pos.Y(4), winner ? 'bold' : '', 'white').setDepth(31);
+                const style = winner ? 'bold' : '';
+                const namePrefix = winner ? '😺 ' : '';
+                const y = startY + i * rowStride;
+                new Button(this, pos.X(50) - sideOffset, y, bubbleW, rowH, r.color, namePrefix + r.nick, rowFont, style, 'white').setDepth(31);
+                new Button(this, pos.X(50), y, bubbleW, rowH, r.color, r.score + ' Points', rowFont, style, 'white').setDepth(31);
+                new Button(this, pos.X(50) + sideOffset, y, bubbleW, rowH, r.color, r.total + ' Total', rowFont, style, 'white').setDepth(31);
             }
 
-            // Back to room
-            new Button(this, pos.X(35), pos.Y(88), pos.X(22), pos.Y(9), uiConfig.COLOR, 'Back to Room', pos.Y(4), 'bold', 'white', () => {
-                this.scene.start('Lobby', { socket: this.socket, code: this.code, players: this.players });
-            }).setDepth(31);
-
-            // Back to menu
-            new Button(this, pos.X(65), pos.Y(88), pos.X(22), pos.Y(9), uiConfig.COLOR, 'Back to Menu', pos.Y(4), 'bold', 'white', () => {
+            // Go to menu — left, mirroring Lobby's "Leave Room" position so
+            // the exit-from-room action sits in the same place across scenes.
+            new Button(this, pos.X(38), pos.Y(80), pos.X(20), pos.Y(10), uiConfig.COLOR, 'Go to Menu', pos.Y(5), 'bold', 'white', () => {
                 this.socket.disconnect();
                 this.scene.start('Menu');
+            }).setDepth(31);
+
+            // Go to room — right, mirroring Lobby's "Start Game" position so
+            // the continue-into-lobby action sits in the same place across scenes.
+            new Button(this, pos.X(62), pos.Y(80), pos.X(20), pos.Y(10), uiConfig.COLOR, 'Go to Room', pos.Y(5), 'bold', 'white', () => {
+                this.scene.start('Lobby', { socket: this.socket, code: this.code, players: this.players });
             }).setDepth(31);
 
         });

@@ -43,8 +43,30 @@ const COLORS = [
   0x00cc44,
   0xed0047,
   0xffc929,
-  0x7024ff
+  0x7024ff,
+  0xf97a0a,
+  0x07b696
 ]
+
+// Approximate playback durations (ms) for each per-action sound. The server
+// sleeps for these between emits so all clients receive events spaced out
+// enough that sounds don't overlap. Peek is exempt — its sound rides on top
+// of whatever else is happening. Keep in sync with client-side SOUND_MS in
+// Config.js (the actor's UI freezes for these same durations after a local
+// emit, so they can't queue the next action before their own sound finishes).
+const SOUND_MS = {
+  play: 350,
+  copy: 500,
+  fail: 500,
+  trade: 500,
+  take: 250,
+  peek: 1800
+};
+
+// Used for log rows that describe server-driven events (game start/end,
+// running out of cards) — same blue as uiConfig.COLOR on the client so the
+// rectangle reads as a "neutral" entry.
+const SERVER_COLOR = 0x00a6ed;
 
 const DECK_PER_PLAYER = [
   0, 0, 1, 1, 2, 2, 3, 3, 4, 4,
@@ -84,7 +106,7 @@ io.on('connection', (socket) => {
     const ids = Object.keys(players);
 
     if (room.state == 0) {
-      if (ids.length < 5) {
+      if (ids.length < 7) {
         const nick = playerNick || 'Player ' + (ids.length + 1);
         if (Object.values(players).some(p => p.nick === nick)) {
           log(code, `JOIN DENIED  ${socket.id.slice(0, 6)} — nick "${nick}" already taken`);
@@ -111,7 +133,7 @@ io.on('connection', (socket) => {
 
       } else {
         log(code, `JOIN DENIED  ${socket.id.slice(0, 6)} — room full`);
-        callback(false, 'Room is full. A maximum of five players can play together.');
+        callback(false, 'Room is full. A maximum of seven players can play together.');
       }
     } else {
       log(code, `JOIN DENIED  ${socket.id.slice(0, 6)} — game in progress`);
@@ -150,6 +172,7 @@ io.on('connection', (socket) => {
         room.history[players[id].nick] = players[id].points ?? 0;
       }
       delete players[id];
+      if (room.knownCards) delete room.knownCards[id];
 
       const ids = Object.keys(players);
       for (let i = 0; i < ids.length; i++) {
@@ -192,15 +215,21 @@ io.on('connection', (socket) => {
     const room = rooms[code];
 
     const playerCount = Object.keys(room.players).length;
-    const deck = [];
-    for (let i = 0; i < playerCount; i++) deck.push(...DECK_PER_PLAYER);
-    room.deck = shuffle(deck);
+    const cardKeys = [];
+    for (let i = 0; i < playerCount; i++) cardKeys.push(...DECK_PER_PLAYER);
+    shuffle(cardKeys);
+    room.cardIdCounter = 0;
+    room.deck = cardKeys.map(key => ({ id: ++room.cardIdCounter, key }));
+    room.knownCards = {};
+    for (const pid of Object.keys(room.players)) room.knownCards[pid] = new Set();
     room.cats = 0;
     room.play = [];
     room.state = 1;
     room.count.deck = 1;
     room.outPlayers = [];
     room.peeks = 0;
+    room.peeksPerPlayer = {};
+    room.peekHistory = {};
     room.standEnabled = false;
 
     const playerNames = Object.values(room.players).map(p => p.nick).join(', ');
@@ -228,9 +257,10 @@ io.on('connection', (socket) => {
 
     if (everyoneReady) {
       log(code, `DEALING      ${CARDS} cards to ${ids.length} players...`);
+      logEntry(code, [{ type: 'text', value: 'Game Started' }], SERVER_COLOR);
       for (let i = 0; i < CARDS; i++) {
         for (const id of ids) {
-          await sleep(200);
+          await sleep(SOUND_MS.take);
           deal(code, id);
         }
       }
@@ -239,7 +269,7 @@ io.on('connection', (socket) => {
 
   });
 
-  socket.on('turnEnd', (data) => {
+  socket.on('turnEnd', locked(async (data) => {
 
     const code = data.code;
     const room = rooms[code];
@@ -258,7 +288,7 @@ io.on('connection', (socket) => {
 
     advanceTurn(code, socket.id);
 
-  });
+  }));
 
   socket.on('dealRequest', (data) => {
 
@@ -273,19 +303,22 @@ io.on('connection', (socket) => {
 
   });
 
-  socket.on('drawRequest', (data, callback) => {
+  socket.on('drawRequest', locked(async (data, callback) => {
 
     const code = data.code;
-    if (!rooms[code] || rooms[code].outPlayers.includes(socket.id)) return;
-    const player = rooms[code].players[socket.id];
+    const room = rooms[code];
+    if (!room || room.outPlayers.includes(socket.id)) return;
+    const player = room.players[socket.id];
 
     player.hold = pop(code);
+    if (!player.hold) return;
 
-    log(code, `DRAW         ${nick(rooms, code, socket.id)} drew card [${player.hold}] | deck: ${rooms[code].deck.length} left`);
-    callback(player.hold);
+    if (room.knownCards[socket.id]) room.knownCards[socket.id].add(player.hold.id);
+    log(code, `DRAW         ${nick(rooms, code, socket.id)} drew card [${player.hold.key}] | deck: ${room.deck.length} left`);
+    callback(player.hold.key);
     everyone('draw', { id: socket.id }, code, socket.id);
 
-  });
+  }));
 
   socket.on('moveRequest', (data) => {
 
@@ -293,7 +326,7 @@ io.on('connection', (socket) => {
 
   });
 
-  socket.on('playRequest', (data) => {
+  socket.on('playRequest', locked(async (data) => {
 
     const code = data.code;
     const room = rooms[code];
@@ -301,30 +334,58 @@ io.on('connection', (socket) => {
     const players = room.players;
     const player = players[socket.id];
     const ids = Object.keys(players);
-    const card = player.hold;
+    const cardObj = player.hold;
+    if (!cardObj) return;
 
     room.play.push({
-      key: card,
-      id: socket.id
+      id: cardObj.id,
+      key: cardObj.key,
+      pid: socket.id
     });
 
     player.hold = null;
+    forgetCard(room, cardObj.id);
 
-    log(code, `PLAY         ${nick(rooms, code, socket.id)} played card [${card}] to discard`);
-    everyone('play', { card }, code, socket.id);
+    // Track what sub-action this play set up so a peekRequest / tradeRequest
+    // arriving during the play sound's sleep can be associated with the right
+    // turn-end. Set BEFORE emit/sleep — sub-action handlers check it.
+    if (cardObj.key >= 5 && cardObj.key <= 8) {
+      room.activeEffect = { type: 'peek', peeksLeft: 1, requiresTrade: false };
+    } else if (cardObj.key === 9) {
+      room.activeEffect = { type: 'trade', peeksLeft: 0, requiresTrade: true };
+    } else if (cardObj.key === 10) {
+      room.activeEffect = { type: 'peekTrade', peeksLeft: 2, requiresTrade: true };
+    } else {
+      room.activeEffect = null;
+    }
+
+    log(code, `PLAY         ${nick(rooms, code, socket.id)} played card [${cardObj.key}] to discard`);
+    logEntry(code, [
+      { type: 'text', value: nick(rooms, code, socket.id) + ' played a ' },
+      { type: 'card', value: cardObj.key }
+    ], playerColor(code, socket.id));
+    everyone('play', { card: cardObj.key, actorId: socket.id }, code, socket.id);
     checkPlaySounds(code);
 
-    if (card <= 4) {
+    await sleep(SOUND_MS.play);
+    if (!rooms[code]) return;
+
+    if (cardObj.key <= 4) {
+      // Cards 0-4 deal a +1 penalty to anyone whose hand size matches the
+      // played value. dealPenalty sleeps per actual deal and posts a log
+      // entry with the real count (a hand-full match would be 0).
       for (const id of ids) {
-        if (id !== socket.id && !room.outPlayers.includes(id) && handLength(code, id) == card) {
-          log(code, `PENALTY      ${nick(rooms, code, id)} has ${card} cards (matches played value) → +1 card`);
-          deal(code, id);
+        if (!rooms[code]) return;
+        if (id !== socket.id && !room.outPlayers.includes(id) && handLength(code, id) == cardObj.key) {
+          log(code, `PENALTY      ${nick(rooms, code, id)} has ${cardObj.key} cards (matches played value) → +1 card`);
+          await dealPenalty(code, id, 1);
         }
       }
+      if (rooms[code]) advanceTurn(code, socket.id);
     }
-  });
+  }));
 
-  socket.on('swapRequest', async (data, callback) => {
+  socket.on('swapRequest', locked(async (data, callback) => {
 
     const code = data.code;
     const i = data.i;
@@ -334,32 +395,45 @@ io.on('connection', (socket) => {
     const players = room.players;
     const player = players[socket.id];
     const hand = player.hand;
-    const card = hand[i][j];
+    const cardObj = hand[i] ? hand[i][j] : null;
+    if (!cardObj || !player.hold) return;
 
     room.play.push({
-      key: card,
-      id: socket.id
+      id: cardObj.id,
+      key: cardObj.key,
+      pid: socket.id
     });
 
     hand[i][j] = player.hold;
     player.hold = null;
+    forgetCard(room, cardObj.id);
 
-    log(code, `SWAP         ${nick(rooms, code, socket.id)} swapped held card into hand[${i}][${j}], discarded [${card}]`);
-    callback(card);
-    everyone('swap', { id: socket.id, card, i, j }, code, socket.id);
+    log(code, `SWAP         ${nick(rooms, code, socket.id)} swapped held card into hand[${i}][${j}], discarded [${cardObj.key}]`);
+    logEntry(code, [
+      { type: 'text', value: nick(rooms, code, socket.id) + ' swapped a ' },
+      { type: 'card', value: cardObj.key }
+    ], playerColor(code, socket.id));
+    callback(cardObj.key);
+    everyone('swap', { id: socket.id, card: cardObj.key, i, j }, code, socket.id);
     checkPlaySounds(code);
 
-    if (card == 11) {
+    // Swap discards a card to the playstack (same play sound). Wait for it
+    // before any +3 take sounds (CAT swap-in penalty) and the turn advance.
+    await sleep(SOUND_MS.play);
+    if (!rooms[code]) return;
+
+    if (cardObj.key == 11) {
       log(code, `PENALTY      ${nick(rooms, code, socket.id)} swapped a CAT [11] into hand → +3 cards`);
-      for (let i = 0; i < 3; i++) {
-        await sleep(200);
-        deal(code, socket.id);
-      }
+      await dealPenalty(code, socket.id, 3);
     }
 
-  });
+    // Swap always ends the active player's turn. Client no longer emits
+    // turnEnd for swap — server owns the sequence.
+    if (rooms[code]) advanceTurn(code, socket.id);
 
-  socket.on('copyRequest', async (data, callback) => {
+  }));
+
+  socket.on('copyRequest', locked(async (data, callback) => {
 
     const code = data.code;
     const id = data.id;
@@ -371,7 +445,32 @@ io.on('connection', (socket) => {
     if (room.outPlayers.includes(id)) return;
     const play = room.play;
 
-    const card = room.players[id].hand[i].splice(j, 1)[0];
+    const cardObj = room.players[id] && room.players[id].hand[i] ? room.players[id].hand[i][j] : null;
+    // The slot may have been emptied by a concurrent action (another player
+    // copied / traded the card before this request landed). Always close the
+    // callback loop so the client can revert its visual drag instead of
+    // freezing at the drop point.
+    if (!cardObj) {
+      log(code, `COPY MISS    ${nick(rooms, code, socket.id)} targeted hand[${i}][${j}] but slot was empty`);
+      callback(null);
+      return;
+    }
+
+    // A player may only copy a card they have personally seen at some point in
+    // this game (peek phase, peek effects 5/6/7/8/10, or drawing). Knowledge is
+    // per-player and tracked by stable card id, so it follows the card through
+    // trades but is cleared when the card hits the discard pile (forgetCard).
+    // The client mirrors this rule by gating its playstack drop zone on
+    // card.known, so this server-side check is a defensive backstop that
+    // shouldn't fire under normal play.
+    if (!room.knownCards[socket.id] || !room.knownCards[socket.id].has(cardObj.id)) {
+      log(code, `COPY DENIED  ${nick(rooms, code, socket.id)} tried to copy unseen card hand[${i}][${j}]`);
+      callback(null);
+      return;
+    }
+
+    room.players[id].hand[i].splice(j, 1);
+    const card = cardObj.key;
     const prevTop = play[play.length - 1];
     // A normal (non-CAT) copy is only legal if the current discard top matches
     // AND it is not itself already a successful copy. This prevents multiple
@@ -382,43 +481,57 @@ io.on('connection', (socket) => {
     const isLegalNormalCopy = card !== 11 && prevTop && card === prevTop.key && !prevTop.isCopy;
 
     play.push({
+      id: cardObj.id,
       key: card,
-      id: socket.id,
+      pid: socket.id,
       isCopy: isLegalNormalCopy
     });
 
-    const copierNick = nick(rooms, code, socket.id);
-    const targetNick = nick(rooms, code, id);
-    const topCard = prevTop;
-    const correct = card === 11
-      ? (topCard && card === topCard.key) // CAT: logged as before; actual penalty logic below
-      : isLegalNormalCopy;
-
-    log(code, `COPY         ${copierNick} copied ${targetNick}'s hand[${i}][${j}] = [${card}] | discard top was [${topCard ? topCard.key : 'none'}]${topCard && topCard.isCopy ? ' (already a copy)' : ''} | ${correct ? 'CORRECT' : 'WRONG'}`);
-    callback(card);
-    everyone('copy', { id, card, i, j }, code, socket.id);
-    checkPlaySounds(code);
+    forgetCard(room, cardObj.id);
 
     const len = play.length;
     const top = play[len - 2];
     const bottom = play[len - 3];
+
+    // success = "copy went through with no penalty for the copier". Mirrors
+    // the penalty-branch conditions below so the client can play the right
+    // copy/fail sound without re-deriving the rules. CAT success additionally
+    // requires a real doble (top is a successful copy and the copier wasn't
+    // part of forming it).
+    const success = card === 11
+      ? !!(top && bottom && top.isCopy && top.pid !== socket.id && bottom.pid !== socket.id)
+      : isLegalNormalCopy;
+
+    const copierNick = nick(rooms, code, socket.id);
+    const targetNick = nick(rooms, code, id);
+    const topCard = prevTop;
+
+    log(code, `COPY         ${copierNick} copied ${targetNick}'s hand[${i}][${j}] = [${card}] | discard top was [${topCard ? topCard.key : 'none'}]${topCard && topCard.isCopy ? ' (already a copy)' : ''} | ${success ? 'CORRECT' : 'WRONG'}`);
+    // Log row segments depend on success and on whether the source was the
+    // copier's own hand or somebody else's.
+    const verb = success ? 'copied' : 'failed';
+    const copySegments = [{ type: 'text', value: copierNick + ' ' + verb + ' a ' }, { type: 'card', value: card }];
+    if (id !== socket.id) copySegments.push({ type: 'text', value: ' from ' + targetNick });
+    logEntry(code, copySegments, playerColor(code, socket.id));
+    callback({ key: card, success });
+    everyone('copy', { id, card, i, j, copierId: socket.id, success }, code, socket.id);
+    checkPlaySounds(code);
+
+    // Hold the next event back until the copy/fail sound has played out, so
+    // the take sounds for any penalty deals don't trample the copy/fail.
+    await sleep(success ? SOUND_MS.copy : SOUND_MS.fail);
+    if (!rooms[code]) return;
 
     // Si no és un gat:
     if (card !== 11) {
       // Si t'has equivocat, penca 2:
       if (!isLegalNormalCopy) {
         log(code, `PENALTY      ${copierNick} wrong copy → +2 cards`);
-        for (let i = 0; i < 2; i++) {
-          await sleep(200);
-          deal(code, socket.id);
-        }
+        await dealPenalty(code, socket.id, 2);
         // Si no t'has equivocat i la carta és d'un altre, l'altre penca 2:
       } else if (id !== socket.id) {
         log(code, `PENALTY      ${targetNick} had card correctly copied → +2 cards`);
-        for (let i = 0; i < 2; i++) {
-          await sleep(200);
-          deal(code, id);
-        }
+        await dealPenalty(code, id, 2);
       } else {
         log(code, `COPY OK      ${copierNick} copied own card correctly, no penalty`);
       }
@@ -431,23 +544,17 @@ io.on('connection', (socket) => {
       //    a doble. An illegal copy (isCopy:false) covering a real doble also
       //    invalidates it (the doble is considered consumed/covered).
       //  - The CAT thrower must not have participated in the doble, i.e.
-      //    socket.id must differ from top.id and bottom.id.
+      //    socket.id must differ from top.pid and bottom.pid.
       //  - Rule "no dobles con gatos" is enforced upstream: isCopy is never
       //    set to true for a CAT, so a CAT can never be part of a doble.
       // Si t'has equivocat, penca 3:
-      if (!top || !bottom || !top.isCopy || top.id == socket.id || bottom.id == socket.id) {
+      if (!top || !bottom || !top.isCopy || top.pid == socket.id || bottom.pid == socket.id) {
         log(code, `PENALTY      ${copierNick} wrong CAT copy → +3 cards`);
-        for (let i = 0; i < 3; i++) {
-          await sleep(200);
-          deal(code, socket.id);
-        }
+        await dealPenalty(code, socket.id, 3);
         // Si no t'has equivocat i la carta és d'un altre, l'altre penca 3:
       } else if (id !== socket.id) {
         log(code, `PENALTY      ${targetNick} had CAT correctly copied → +3 cards`);
-        for (let i = 0; i < 3; i++) {
-          await sleep(200);
-          deal(code, id);
-        }
+        await dealPenalty(code, id, 3);
       } else {
         log(code, `COPY OK      ${copierNick} copied own CAT correctly, no penalty`);
       }
@@ -470,9 +577,23 @@ io.on('connection', (socket) => {
       }
     }
 
-  });
+    // The active player can complete a peek (5/6/7/8) or peekTrade (10)
+    // effect by copying instead of waiting / trading. If we still have an
+    // activeEffect after the copy resolves, treat the copy as the effect's
+    // completion and advance the turn — the corresponding peek/trade
+    // auto-advance path snapshotted activeEffect and will skip itself
+    // because we cleared it via advanceTurn.
+    if (rooms[code]) {
+      const activeId = Object.keys(rooms[code].players)[rooms[code].count.turn];
+      if (activeId && socket.id === activeId && rooms[code].activeEffect) {
+        log(code, `AUTO END     ${nick(rooms, code, activeId)} completed effect via copy → advancing turn`);
+        advanceTurn(code, activeId);
+      }
+    }
 
-  socket.on('peekRequest', (data, callback) => {
+  }));
+
+  socket.on('peekRequest', locked(async (data, callback) => {
 
     const code = data.code;
     const i = data.i;
@@ -486,15 +607,36 @@ io.on('connection', (socket) => {
     }
     const players = room.players;
     const ids = Object.keys(players);
-    const cardVal = players[id].hand[i][j];
+    const cardObj = players[id] && players[id].hand[i] ? players[id].hand[i][j] : null;
+    if (!cardObj) return;
     const phase = room.state == 1 ? 'peek phase' : 'gameplay';
 
-    log(code, `PEEK         ${nick(rooms, code, socket.id)} peeked ${nick(rooms, code, id)}'s hand[${i}][${j}] = [${cardVal}] (${phase})`);
-    callback(cardVal);
+    if (room.knownCards && room.knownCards[socket.id]) {
+      room.knownCards[socket.id].add(cardObj.id);
+    }
+    log(code, `PEEK         ${nick(rooms, code, socket.id)} peeked ${nick(rooms, code, id)}'s hand[${i}][${j}] = [${cardObj.key}] (${phase})`);
+    callback(cardObj.key);
     everyone('peek', { peekerId: socket.id, peekedId: id, peekedI: i, peekedJ: j }, code, socket.id);
 
     // Peek phase
     if (room.state == 1) {
+
+      // Track per-player peek-key history (in click order) for the room-67
+      // easter egg, and the simple count for the "peeked their cards" log.
+      if (!room.peekHistory) room.peekHistory = {};
+      if (!room.peekHistory[socket.id]) room.peekHistory[socket.id] = [];
+      room.peekHistory[socket.id].push(cardObj.key);
+
+      if (!room.peeksPerPlayer) room.peeksPerPlayer = {};
+      room.peeksPerPlayer[socket.id] = (room.peeksPerPlayer[socket.id] || 0) + 1;
+      if (room.peeksPerPlayer[socket.id] === 2) {
+        logEntry(code, [{ type: 'text', value: nick(rooms, code, socket.id) + ' peeked their cards' }], playerColor(code, socket.id));
+        // Room-67 easter egg: a player's two initial peeks were [6, 7].
+        const seq = room.peekHistory[socket.id];
+        if (code === '67' && seq.length === 2 && seq[0] === 6 && seq[1] === 7) {
+          io.to(socket.id).emit('sound', { name: 'sixSeven' });
+        }
+      }
 
       room.peeks += 1
       log(code, `PEEK PHASE   ${room.peeks}/${2 * ids.length} peeks done`);
@@ -503,12 +645,62 @@ io.on('connection', (socket) => {
         delete room.peeks
         room.state = 2;
         log(code, `GAMEPLAY     all players peeked — starting turn 1 round 1`);
+        // Initial peeks stay snappy — no sleep before turnStart even though
+        // the last peek's audio may briefly overlap the first turn sound.
         everyone('turnStart', { id: ids[room.count.turn], turn: room.count.turn, round: room.count.round }, code);
+      }
+
+    } else {
+
+      // Log every gameplay peek with the right wording — "peeked a card"
+      // for self-peeks (5/6 or own half of 10), "peeked a card from <p>"
+      // for alien peeks (7/8 or alien half of 10).
+      if (socket.id === id) {
+        logEntry(code, [{ type: 'text', value: nick(rooms, code, socket.id) + ' peeked a card' }], playerColor(code, socket.id));
+      } else {
+        logEntry(code, [{ type: 'text', value: nick(rooms, code, socket.id) + ' peeked a card from ' + nick(rooms, code, id) }], playerColor(code, socket.id));
+      }
+
+      // Gameplay peek that resolves an active effect: 5/6/7/8 use one peek
+      // and end the turn; 10's peekTrade burns two peeks before the trade
+      // (the trade itself triggers the turn advance with its own sleep).
+      const activeId = ids[room.count.turn];
+      if (socket.id === activeId && room.activeEffect && room.activeEffect.peeksLeft > 0) {
+        if (!room.activeEffect.peekedKeys) room.activeEffect.peekedKeys = [];
+        room.activeEffect.peekedKeys.push(cardObj.key);
+        room.activeEffect.peeksLeft--;
+
+        // Room-67 easter egg: card 10's two peeks were [6, 7] in order.
+        if (code === '67' && room.activeEffect.type === 'peekTrade' && room.activeEffect.peekedKeys.length === 2) {
+          const seq = room.activeEffect.peekedKeys;
+          if (seq[0] === 6 && seq[1] === 7) {
+            io.to(socket.id).emit('sound', { name: 'sixSeven' });
+          }
+        }
+
+        if (room.activeEffect.peeksLeft === 0 && !room.activeEffect.requiresTrade) {
+          // Single-peek effect (5-8) complete. Schedule the advance via
+          // setTimeout (outside the room lock) instead of awaiting inside
+          // the lock — otherwise the 1.8s peek wait blocks the active
+          // player's own drag-to-copy of the peeked card, since the copy
+          // request would queue behind us. The retry re-acquires the
+          // lock when the timer fires and only advances if the activeEffect
+          // snapshot still matches (no other path cleared/replaced it).
+          const expected = room.activeEffect;
+          setTimeout(async () => {
+            if (!rooms[code]) return;
+            await withRoomLock(rooms[code], async () => {
+              if (rooms[code] && rooms[code].activeEffect === expected) {
+                advanceTurn(code, socket.id);
+              }
+            });
+          }, SOUND_MS.peek);
+        }
       }
 
     }
 
-  });
+  }));
 
   socket.on('disconnect', () => {
 
@@ -534,6 +726,7 @@ io.on('connection', (socket) => {
 
         room.history[players[socket.id].nick] = players[socket.id].points ?? 0;
         delete players[socket.id];
+        if (room.knownCards) delete room.knownCards[socket.id];
 
         const newIds = Object.keys(players);
         for (let i = 0; i < newIds.length; i++) {
@@ -552,7 +745,7 @@ io.on('connection', (socket) => {
 
   });
 
-  socket.on('tradeRequest', (data) => {
+  socket.on('tradeRequest', locked(async (data) => {
 
     const code = data.code;
     const traderId = data.traderId;
@@ -562,9 +755,19 @@ io.on('connection', (socket) => {
     const traderJ = data.traderJ;
     const tradedJ = data.tradedJ;
     if (!rooms[code]) return;
+    // The requester must be one of the two parties in the trade. Without this
+    // check, the unified drag/drop UI lets a client drag any alien card onto
+    // any other alien card — which would otherwise serialize into a valid
+    // tradeRequest and have the server swap two cards neither of which the
+    // requester owns.
+    if (socket.id !== traderId && socket.id !== tradedId) {
+      log(code, `TRADE DENIED ${nick(rooms, code, socket.id)} not a party in ${nick(rooms, code, traderId)} ↔ ${nick(rooms, code, tradedId)}`);
+      return;
+    }
     if (rooms[code].outPlayers.includes(traderId)) return;
     if (rooms[code].outPlayers.includes(tradedId)) return;
-    const players = rooms[code].players;
+    const room = rooms[code];
+    const players = room.players;
     const traderHand = players[traderId].hand;
     const tradedHand = players[tradedId].hand;
 
@@ -574,11 +777,26 @@ io.on('connection', (socket) => {
     traderHand[traderI][traderJ] = tradedHand[tradedI][tradedJ];
     tradedHand[tradedI][tradedJ] = temp;
 
-    everyone('trade', { traderId, tradedId, traderI, traderJ, tradedI, tradedJ }, code, socket.id)
+    everyone('trade', { traderId, tradedId, traderI, traderJ, tradedI, tradedJ, actorId: socket.id }, code, socket.id)
 
-  });
+    const otherId = socket.id === traderId ? tradedId : traderId;
+    logEntry(code, [{ type: 'text', value: nick(rooms, code, socket.id) + ' traded cards with ' + nick(rooms, code, otherId) }], playerColor(code, socket.id));
 
-  socket.on('standRequest', (data) => {
+    // If the active player just completed their card 9 / card 10 effect,
+    // hold the turn change back until the trade sound has played, then
+    // advance. activeEffect is cleared inside advanceTurn. Snapshot the
+    // effect so a concurrent copy-as-completion doesn't cause us to
+    // double-advance after they've already advanced.
+    const activeId = Object.keys(room.players)[room.count.turn];
+    if (socket.id === activeId && room.activeEffect && room.activeEffect.requiresTrade) {
+      const expected = room.activeEffect;
+      await sleep(SOUND_MS.trade);
+      if (rooms[code] && rooms[code].activeEffect === expected) advanceTurn(code, socket.id);
+    }
+
+  }));
+
+  socket.on('standRequest', locked(async (data) => {
 
     const code = data.code;
     const room = rooms[code];
@@ -592,6 +810,7 @@ io.on('connection', (socket) => {
     if (player.hold !== null && player.hold !== undefined) return;
 
     log(code, `STAND        ${nick(rooms, code, socket.id)} chose to stand`);
+    logEntry(code, [{ type: 'text', value: nick(rooms, code, socket.id) + ' stood' }], playerColor(code, socket.id));
 
     enterLastRound(code, socket.id, 'stand');
 
@@ -600,7 +819,7 @@ io.on('connection', (socket) => {
       advanceTurn(code, socket.id);
     }
 
-  });
+  }));
 
 });
 
@@ -661,7 +880,10 @@ function reshuffle(code) {
   const room = rooms[code];
   const play = room.play;
 
-  const reshuffled = play.slice(0, play.length - 2).map(card => card.key);
+  // Carry the {id, key} pair back into the deck so card identity is preserved
+  // through reshuffles. play entries also carry pid/isCopy which are play-only,
+  // so strip those.
+  const reshuffled = play.slice(0, play.length - 2).map(c => ({ id: c.id, key: c.key }));
   room.deck = shuffle(reshuffled);
 
   // Trim the play pile to match what the client keeps (last 2 cards),
@@ -672,7 +894,7 @@ function reshuffle(code) {
   let len = deck.length;
   let catsRemoved = 0;
   for (let i = 0; i < len; i++) {
-    if (deck[i] == 11) {
+    if (deck[i].key == 11) {
       room.cats += 1;
       deck.splice(i, 1);
       i--;
@@ -707,6 +929,10 @@ function enterLastRound(code, outId, reason) {
     log(code, `OUT          ${nick(rooms, code, outId)} went out (last round already active)`);
   }
 
+  if (reason === 'empty') {
+    logEntry(code, [{ type: 'text', value: nick(rooms, code, outId) + ' ran out of cards' }], SERVER_COLOR);
+  }
+
   everyone('lastRound', { eliminatedId: outId, lastRoundNum: room.lastRoundNum }, code);
 
 }
@@ -715,6 +941,10 @@ function advanceTurn(code, endingId) {
 
   const room = rooms[code];
   if (!room) return;
+  // The current active player's effect (if any) is consumed by reaching this
+  // point — either the effect ran to completion, or the player skipped it.
+  // The next active player starts with no effect.
+  room.activeEffect = null;
 
   const ids = Object.keys(room.players);
   const endingNick = nick(rooms, code, endingId);
@@ -751,16 +981,17 @@ function advanceTurn(code, endingId) {
 
   if (room.state === 3 && (allOut || nextRound > room.lastRoundNum)) {
     log(code, `GAME OVER    ${allOut ? 'all players stood' : `end of round ${room.lastRoundNum + 1}`}`);
+    logEntry(code, [{ type: 'text', value: 'Game Ended' }], SERVER_COLOR);
 
     // Compute game scores and accumulate into player.points
     const playersWithCats = Object.values(room.players)
-      .filter(p => p.hand.flat().includes(11)).length;
+      .filter(p => p.hand.flat().some(c => c.key === 11)).length;
 
     const gameScores = {};
     for (const [id, p] of Object.entries(room.players)) {
       const cards = p.hand.flat();
-      const cats = cards.filter(v => v === 11).length;
-      const nonCatSum = cards.filter(v => v !== 11).reduce((sum, v) => sum + v, 0);
+      const cats = cards.filter(c => c.key === 11).length;
+      const nonCatSum = cards.filter(c => c.key !== 11).reduce((sum, c) => sum + c.key, 0);
 
       const catScore = playersWithCats > 1
         ? cats * 10
@@ -770,14 +1001,15 @@ function advanceTurn(code, endingId) {
       const before = p.points ?? 0;
       p.points = before + score;
       gameScores[id] = score;
-      log(code, `SCORE        ${nick(rooms, code, id)} hand=${JSON.stringify(p.hand)} cats=${cats} catScore=${catScore} score=${score} before=${before} total=${p.points}`);
+      const handKeys = p.hand.map(row => row.map(c => c.key));
+      log(code, `SCORE        ${nick(rooms, code, id)} hand=${JSON.stringify(handKeys)} cats=${cats} catScore=${catScore} score=${score} before=${before} total=${p.points}`);
     }
 
     everyone('gameEnd', {
       players: Object.fromEntries(
         Object.entries(room.players).map(([id, p]) => [id, {
           nick: p.nick,
-          hand: p.hand,
+          hand: p.hand.map(row => row.map(c => c.key)),
           color: p.color,
           points: p.points,
           leader: p.leader,
@@ -794,6 +1026,10 @@ function advanceTurn(code, endingId) {
     room.cats = 0;
     delete room.lastRoundNum;
     room.standEnabled = false;
+    room.knownCards = {};
+    room.cardIdCounter = 0;
+    room.peeksPerPlayer = {};
+    room.peekHistory = {};
     for (const p of Object.values(room.players)) {
       p.hand = [[], []];
       p.hold = null;
@@ -812,13 +1048,18 @@ function advanceTurn(code, endingId) {
 
 }
 
+// Returns true if a card was actually dealt, false if the deal couldn't
+// happen (hand is at the 14-card cap or the deck couldn't produce a card).
+// Callers in penalty loops use this so they only sleep / log for the takes
+// that really happened — without it, the "+2 cards" loop would still burn
+// SOUND_MS.take per iteration even when the player's hand was already full.
 function deal(code, id) {
 
-  if (!rooms[code]) return;
+  if (!rooms[code]) return false;
 
   if (handLength(code, id) == 14) {
     log(code, `DEAL SKIP    ${nick(rooms, code, id)} already has 14 cards`);
-    return;
+    return false;
   }
 
   const room = rooms[code];
@@ -827,6 +1068,10 @@ function deal(code, id) {
   const hand = player.hand;
 
   const card = pop(code);
+  if (!card) {
+    log(code, `DEAL SKIP    no card available from deck`);
+    return false;
+  }
 
   let line = 0;
   let min = -1;
@@ -839,9 +1084,73 @@ function deal(code, id) {
 
   hand[line].push(card);
 
-  log(code, `DEAL         [${card}] → ${nick(rooms, code, id)} row ${line} (hand: ${JSON.stringify(hand.map(r => r.length))})`);
+  log(code, `DEAL         [${card.key}] → ${nick(rooms, code, id)} row ${line} (hand: ${JSON.stringify(hand.map(r => r.length))})`);
   everyone('deal', { id, line }, code);
 
+  return true;
+}
+
+// Common penalty-deal helper. Tries to deal `count` cards to `id`, sleeping
+// SOUND_MS.take only after each successful deal so the take sounds line up
+// with actual emits. After the sequence, drops a "took N cards" log row
+// with the real count (or no row at all if 0). Used by 0-4 plays, copy
+// fails, copy successes against another player, and CAT-swap penalties.
+async function dealPenalty(code, id, count) {
+
+  let dealt = 0;
+  for (let i = 0; i < count; i++) {
+    if (!rooms[code]) break;
+    if (deal(code, id)) {
+      dealt++;
+      await sleep(SOUND_MS.take);
+    } else {
+      break;
+    }
+  }
+  if (dealt > 0 && rooms[code]) {
+    const cards = dealt === 1 ? 'card' : 'cards';
+    logEntry(code, [{ type: 'text', value: nick(rooms, code, id) + ' took ' + dealt + ' ' + cards }], playerColor(code, id));
+  }
+  return dealt;
+
+}
+
+// Per-room mutex. Wraps an async operation so only one such operation is
+// "in flight" per room at a time — others queue up behind it. Solves the
+// race where (e.g.) a copy fired during the active player's 0-4 penalty
+// loop interleaves its own emits, producing on-screen sound/event ordering
+// like "take, take, turn, take" because both sequences raced. With the
+// lock, the second handler waits until the first releases before emitting.
+async function withRoomLock(room, fn) {
+
+  if (!room) return;
+  if (room.actionLock) {
+    await new Promise(resolve => {
+      room.actionQueue = room.actionQueue || [];
+      room.actionQueue.push(resolve);
+    });
+  }
+  room.actionLock = true;
+  try {
+    return await fn();
+  } finally {
+    room.actionLock = false;
+    const next = room.actionQueue && room.actionQueue.shift();
+    if (next) next();
+  }
+
+}
+
+// Decorator that runs a socket handler under the room's lock, so all
+// game-action handlers (play/swap/copy/trade/peek/stand/turnEnd/draw)
+// serialize per-room and their emits never interleave across handlers.
+function locked(handler) {
+  return async (...args) => {
+    const data = args[0];
+    const room = data && rooms[data.code];
+    if (!room) return await handler(...args);
+    return await withRoomLock(room, () => handler(...args));
+  };
 }
 
 function pop(code) {
@@ -873,9 +1182,47 @@ function checkPlaySounds(code) {
   const top = play[play.length - 1];
   const prev = play[play.length - 2];
 
-  if (top && prev && top.key === 7 && prev.key === 6) {
-    everyone('sound', { name: 'sevenOnSix' }, code);
+  // Easter egg: only rooms named "67" hear the six-seven sting when a 7
+  // lands on a 6 in the discard pile.
+  if (code === '67' && top && prev && top.key === 7 && prev.key === 6) {
+    everyone('sound', { name: 'sixSeven' }, code);
   }
+
+}
+
+// Erase a card id from every player's known set. Called whenever a card moves
+// out of a hand into the discard pile (play/copy/swap). Trades preserve
+// knowledge — they don't go through here. Reshuffling carries forgotten ids
+// back into the deck untouched, so a later re-deal arrives unknown to all
+// players unless somebody re-peeks it.
+function forgetCard(room, cardId) {
+
+  if (!room.knownCards) return;
+  for (const set of Object.values(room.knownCards)) {
+    set.delete(cardId);
+  }
+
+}
+
+// Broadcast a row to every client's bottom-right action log. Segments are
+// either {type:'text', value:string} or {type:'card', value:keyNumber} —
+// the client renders them inline so card icons appear next to the action
+// description. Color tints the row's translucent background and identifies
+// the actor: SERVER_COLOR for server-driven events, the player's own
+// COLORS[i] for player actions.
+function logEntry(code, segments, color) {
+
+  if (!rooms[code]) return;
+  everyone('logEntry', { segments, color }, code);
+
+}
+
+// Player colour lookup with a fallback to SERVER_COLOR for safety, used by
+// log emission sites where the actor's player record is expected to exist.
+function playerColor(code, id) {
+
+  if (rooms[code] && rooms[code].players[id]) return rooms[code].players[id].color;
+  return SERVER_COLOR;
 
 }
 

@@ -4,8 +4,10 @@ import { pos, playConfig, deckConfig, cardConfig, handConfig } from './Config.js
 
 export class PlayStack {
 
-    constructor(scene) {
+    constructor(scene, x = playConfig.X, y = playConfig.Y) {
         this.scene = scene;
+        this.x = x;
+        this.y = y;
         this.array = [];
         this.cats = 0;
         this.topIsCopy = false;
@@ -18,14 +20,14 @@ export class PlayStack {
         const cardSize = pos.Y(6);
         const cardScale = cardSize / cardConfig.SIZE;
         const offset = cardSize / 2;
-        const x = playConfig.X - pos.Y(9);
-        const y = playConfig.Y - pos.Y(9);
+        const x = this.x - pos.Y(9);
+        const y = this.y - pos.Y(9);
 
         const bottom = this.scene.add.sprite(-offset / 2, offset / 2, 'cards', 12).setScale(cardScale);
         const top = this.scene.add.sprite(offset / 2, -offset / 2, 'cards', 12).setScale(cardScale);
         this.copyIndicator = this.scene.add.container(x, y, [bottom, top])
             .setVisible(false)
-            .setDepth(2);
+            .setDepth(-1);
     }
 
     play(card, isCopyAttempt = false) {
@@ -54,8 +56,8 @@ export class PlayStack {
         this.copyIndicator.setVisible(this.topIsCopy);
 
         card.tween({
-            x: playConfig.X,
-            y: playConfig.Y,
+            x: this.x,
+            y: this.y,
             scaleX: cardConfig.SCALE,
             scaleY: cardConfig.SCALE,
             alpha: 1,
@@ -149,7 +151,7 @@ export class PlayStack {
     }
 
     setDefaultCard() {
-        this.topCard = new Card(this.scene, playConfig.X, playConfig.Y, cardConfig.SCALE, null, 'play', false);
+        this.topCard = new Card(this.scene, this.x, this.y, cardConfig.SCALE, null, 'play', false);
         this.array.push(this.topCard);
     }
 

@@ -16,6 +16,13 @@ export class Card extends Phaser.GameObjects.Sprite {
         this.dragging = false;
         this.dropped = false;
 
+        // Whether the local player has personally seen this card's value at
+        // some point in this game (via peek phase, peek effects, or drawing).
+        // Drives the playstack-drop gate in HandStack: only known cards can be
+        // played as copies. Reset when a card cycles back into the deck
+        // through a reshuffle (DeckStack.pushAll).
+        this.known = false;
+
         this.tweenQueue = [];
 
         scene.add.existing(this);
@@ -138,7 +145,7 @@ export class Card extends Phaser.GameObjects.Sprite {
         return this;
     }
 
-    peek(key, onComplete = () => {}) {
+    peek(key, onComplete = () => {}, onFlipBackStart = () => {}) {
         this.peeking = true;
         this.key = key;
         this.flip(true, true, () => {
@@ -150,9 +157,13 @@ export class Card extends Phaser.GameObjects.Sprite {
                     const cancelled = this.cancelPeek;
                     this.cancelPeek = false;
                     if (this.type === 'play') {
+                        // Card was copied/swapped to the playstack mid-peek
+                        // — skip the flip-back (and any unpeek-aligned hook)
+                        // since the visual is no longer a peeking card.
                         this.peeking = false;
                         return;
                     }
+                    onFlipBackStart.call(this);
                     this.flip(false, true, () => {
                         this.peeking = false;
                         if (!cancelled) onComplete.call(this);
@@ -234,5 +245,31 @@ export class Card extends Phaser.GameObjects.Sprite {
     setDropZone(bool) {
         if (!this.input) console.log('no input');
         this.input.dropZone = bool;
+    }
+
+    // Cancel an in-progress drag on this card without firing the user-driven
+    // drop / dragend cleanup. Used when a server event (alien copy/swap/trade)
+    // removes or relocates a card the local user happens to be dragging — the
+    // drag handler would otherwise keep overwriting the card's position with
+    // the cursor every frame, fighting the play/order tween, and dragend on
+    // mouse-release would back() the card to a stale oX/oY. We mute the drag
+    // and reset the visual state by hand so the server-driven tween can run
+    // unmolested. Drop zones are cleared because dragend's normal cleanup is
+    // skipped via its !dragging early return.
+    cancelDrag() {
+        if (!this.dragging) return;
+        this.dragging = false;
+        this.dropped = false;
+        this.setAlpha(1);
+        this.clearTint();
+        this.setDepth(0);
+        if (this.scene && this.scene.playStack) {
+            this.scene.playStack.setDropZone(false);
+        }
+        if (this.scene && this.scene.handStacks) {
+            for (const hs of Object.values(this.scene.handStacks)) {
+                hs.setDropZone(false);
+            }
+        }
     }
 }

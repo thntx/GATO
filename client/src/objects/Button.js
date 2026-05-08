@@ -1,4 +1,4 @@
-import { uiConfig } from './Config.js';
+import { uiConfig, TEXT_RESOLUTION } from './Config.js';
 
 export class Button extends Phaser.GameObjects.Container {
 
@@ -8,7 +8,7 @@ export class Button extends Phaser.GameObjects.Container {
 
         this.hitbox = scene.add.rectangle(- w / 2, - h / 2, w, h, color).setRounded(uiConfig.BABEL).setVisible(false);
         this.shape = scene.add.rectangle(0, 0, w, h, color).setRounded(uiConfig.BABEL);
-        this.label = scene.add.text(0, 0, text, {fontFamily: uiConfig.FONT, fontSize: textSize, fontStyle: textStyle, color: textColor}).setOrigin(0.5);
+        this.label = scene.add.text(0, 0, text, {fontFamily: uiConfig.FONT, fontSize: textSize, fontStyle: textStyle, color: textColor}).setOrigin(0.5).setResolution(TEXT_RESOLUTION);
 
         this.add([this.shape, this.label]);
         this.setInteractive(this.hitbox, Phaser.Geom.Rectangle.Contains);
@@ -51,7 +51,9 @@ export class Button extends Phaser.GameObjects.Container {
         }
     }
 
-    setOutlined(bool, color = 0xffffff, thickness = 4, gap = 6) {
+    setOutlined(bool, color = 0xffffff, thickness = null, gap = null) {
+        if (thickness === null) thickness = Math.max(2, this.shape.height * 0.08);
+        if (gap === null) gap = thickness;
         if (bool) {
             if (!this.outline) {
                 const w = this.shape.width + gap * 2 + thickness;

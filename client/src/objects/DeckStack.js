@@ -1,6 +1,6 @@
 import { Card } from './Card.js'
 import { Button } from './Button.js'
-import { pos, deckConfig, handConfig, cardConfig, uiConfig } from './Config.js'
+import { pos, deckConfig, handConfig, cardConfig, uiConfig, SOUND_MS } from './Config.js'
 
 export class DeckStack {
 
@@ -29,6 +29,7 @@ export class DeckStack {
 
         card.on('pointerdown', () => {
 
+            if (this.scene.frozen) return;
             if ((!card.draggable) ||
                 (card != this.topCard && card != this.holdCard) ||
                 (card == this.topCard && (!this.scene.myTurn || this.holdCard || this.scene.skip.visible))) return;
@@ -41,10 +42,15 @@ export class DeckStack {
 
                 this.scene.socket.emit('drawRequest', { code: this.scene.code }, (key) => {
                     card.key = key;
+                    card.known = true;
                     this.scene.playStack.setDropZone(key != 11);
                     if (card.dragging && card.frame.name == 12) {
                         card.flip(true);
                     }
+                    // Manually drawing a card from the deck into hand uses
+                    // the "hand" sound. "take" is reserved for involuntary
+                    // gameplay deals (penalties).
+                    this.scene.playActionSound('hand', this.scene.socket.id);
                 });
             } else {
                 this.scene.playStack.setDropZone(card.key != 11);
@@ -103,11 +109,20 @@ export class DeckStack {
 
                 this.scene.socket.emit('playRequest', { code: this.scene.code, card: key });
                 this.scene.playStack.play(card);
-
+                this.scene.playActionSound('play', this.scene.socket.id);
                 if (key <= 4) {
+                    // Server will deal +1 to every other player whose hand
+                    // size matches the played value, then advance the turn.
+                    // Each deal triggers a take sound on this client too.
+                    // Freeze long enough to cover the worst case (everyone
+                    // else matches) so the actor can't queue another action
+                    // (e.g. attempt a copy on top of their own play) while
+                    // the take sequence is still firing.
+                    const maxTakes = Math.max(0, Object.keys(this.scene.players).length - 1);
+                    this.scene.freeze(SOUND_MS.play + maxTakes * SOUND_MS.take);
                     this.scene.myTurn = false;
-                    this.scene.socket.emit('turnEnd', { code: this.scene.code });
                 } else {
+                    this.scene.freeze(SOUND_MS.play);
                     this.scene.skip.setVisible(true);
 
                     if (key === 5 || key === 6) {
@@ -135,10 +150,19 @@ export class DeckStack {
                     const swapped = this.scene.handStack.swap(card, gameObject.i, gameObject.j);
                     swapped.key = key;
                     this.scene.playStack.play(swapped);
+                    // If a CAT was displaced into discard, the server will
+                    // deal +3 cards to this player before advancing the turn.
+                    // Extend the freeze so it covers the take sequence too.
+                    if (key === 11) {
+                        this.scene.freeze(3 * SOUND_MS.take);
+                    }
                 });
+                this.scene.playActionSound('play', this.scene.socket.id);
+                this.scene.freeze(SOUND_MS.play);
 
+                // Server auto-advances after the swap (and any CAT-swap
+                // penalty deals); client locks myTurn and waits for turnStart.
                 this.scene.myTurn = false;
-                this.scene.socket.emit('turnEnd', { code: this.scene.code });
 
             }
 
@@ -188,6 +212,11 @@ export class DeckStack {
         for (const card of cards) {
             card.type = 'deck';
             card.key = null;
+            // Cards rejoining the deck through a reshuffle lose their
+            // known-by-this-client status — even if the local player saw the
+            // value while it was in a hand, they can't tell which face-down
+            // placeholder it becomes after the shuffle.
+            card.known = false;
             card.setFrame(12);
             card.setScale(card.oScale);
             if (this.topCard) {
@@ -269,12 +298,18 @@ export class DeckStack {
         this.alienHoldCard.setDepth(1);
 
         const { x, y } = this.computeAlienHoldPosition(id);
+        // Use the target alien's actual hand scale so the hold card matches
+        // the size of the cards beside it. Without this, 6/7-player rooms
+        // (which use SMALL_ALIEN_SCALE for hands) would show an oversized
+        // hold card next to the smaller hand sprites.
+        const handStack = this.scene.handStacks[id];
+        const holdScale = handStack ? handStack.scale : cardConfig.ALIEN_SCALE;
 
         this.alienHoldCard.tween({
             x,
             y,
-            scaleX: cardConfig.ALIEN_SCALE,
-            scaleY: cardConfig.ALIEN_SCALE,
+            scaleX: holdScale,
+            scaleY: holdScale,
             alpha: uiConfig.SELECTED_ALPHA,
             duration: 200,
             ease: 'Quart.out'
