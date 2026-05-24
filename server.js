@@ -113,18 +113,25 @@ io.on('connection', (socket) => {
           callback(false, 'That nickname is already in use in this room.');
           return;
         }
-        const restoredPoints = room.history[nick];
+        // history can be either a number (legacy: just the points carried
+        // across a leave/rejoin) or an object {points, wins} now that wins
+        // are tracked. Handle both shapes so an older history entry doesn't
+        // crash on the next rejoin.
+        const restored = room.history[nick];
+        const restoredPoints = (typeof restored === 'number') ? restored : (restored && restored.points);
+        const restoredWins = (restored && typeof restored === 'object') ? (restored.wins ?? 0) : 0;
         players[socket.id] = {
           nick,
           color: COLORS[ids.length],
           leader: ids.length == 0,
           hand: [[], []],
           hold: null,
-          points: restoredPoints ?? 0
+          points: restoredPoints ?? 0,
+          wins: restoredWins
         }
-        if (restoredPoints !== undefined) {
+        if (restored !== undefined) {
           delete room.history[nick];
-          log(code, `REJOIN       ${nick} restored ${restoredPoints} pts`);
+          log(code, `REJOIN       ${nick} restored ${restoredPoints ?? 0} pts, ${restoredWins} wins`);
         }
 
         log(code, `JOIN         ${players[socket.id].nick} (${ids.length + 1}/5 players)`);
@@ -169,7 +176,7 @@ io.on('connection', (socket) => {
       }
 
       if (players[id]) {
-        room.history[players[id].nick] = players[id].points ?? 0;
+        room.history[players[id].nick] = { points: players[id].points ?? 0, wins: players[id].wins ?? 0 };
       }
       delete players[id];
       if (room.knownCards) delete room.knownCards[id];
@@ -456,19 +463,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // A player may only copy a card they have personally seen at some point in
-    // this game (peek phase, peek effects 5/6/7/8/10, or drawing). Knowledge is
-    // per-player and tracked by stable card id, so it follows the card through
-    // trades but is cleared when the card hits the discard pile (forgetCard).
-    // The client mirrors this rule by gating its playstack drop zone on
-    // card.known, so this server-side check is a defensive backstop that
-    // shouldn't fire under normal play.
-    if (!room.knownCards[socket.id] || !room.knownCards[socket.id].has(cardObj.id)) {
-      log(code, `COPY DENIED  ${nick(rooms, code, socket.id)} tried to copy unseen card hand[${i}][${j}]`);
-      callback(null);
-      return;
-    }
-
     room.players[id].hand[i].splice(j, 1);
     const card = cardObj.key;
     const prevTop = play[play.length - 1];
@@ -577,15 +571,16 @@ io.on('connection', (socket) => {
       }
     }
 
-    // The active player can complete a peek (5/6/7/8) or peekTrade (10)
-    // effect by copying instead of waiting / trading. If we still have an
-    // activeEffect after the copy resolves, treat the copy as the effect's
-    // completion and advance the turn — the corresponding peek/trade
-    // auto-advance path snapshotted activeEffect and will skip itself
-    // because we cleared it via advanceTurn.
+    // The active player can complete an effect by copying instead of
+    // waiting / trading, but only once they've used every peek the effect
+    // grants. Otherwise playing a 7 and immediately copying a 7 from hand
+    // would skip the peek-alien for free; same for 10 if you copy before
+    // peeking. Card 9 sets peeksLeft=0 at play time, so a copy still
+    // substitutes for the trade with no peeks ever owed.
     if (rooms[code]) {
       const activeId = Object.keys(rooms[code].players)[rooms[code].count.turn];
-      if (activeId && socket.id === activeId && rooms[code].activeEffect) {
+      const effect = rooms[code].activeEffect;
+      if (activeId && socket.id === activeId && effect && effect.peeksLeft === 0) {
         log(code, `AUTO END     ${nick(rooms, code, activeId)} completed effect via copy → advancing turn`);
         advanceTurn(code, activeId);
       }
@@ -724,7 +719,7 @@ io.on('connection', (socket) => {
           promote(code, next);
         }
 
-        room.history[players[socket.id].nick] = players[socket.id].points ?? 0;
+        room.history[players[socket.id].nick] = { points: players[socket.id].points ?? 0, wins: players[socket.id].wins ?? 0 };
         delete players[socket.id];
         if (room.knownCards) delete room.knownCards[socket.id];
 
@@ -1003,6 +998,33 @@ function advanceTurn(code, endingId) {
       gameScores[id] = score;
       const handKeys = p.hand.map(row => row.map(c => c.key));
       log(code, `SCORE        ${nick(rooms, code, id)} hand=${JSON.stringify(handKeys)} cats=${cats} catScore=${catScore} score=${score} before=${before} total=${p.points}`);
+    }
+
+    // Determine winner(s) for the win-counter using the same tiebreaker
+    // chain the client uses for game-over display: score asc → hand size
+    // asc → outBy ('empty' > 'stand' > didn't go out). Tied tops all
+    // increment their wins so the lobby's "wins" tiebreaker treats them
+    // equally.
+    const outRank = (pl) => pl.outBy === 'empty' ? 0 : pl.outBy === 'stand' ? 1 : 2;
+    const ranked = Object.entries(room.players).map(([id, pl]) => ({
+      id,
+      pl,
+      score: gameScores[id],
+      handSize: pl.hand.flat().length,
+      out: outRank(pl)
+    })).sort((a, b) => {
+      if (a.score !== b.score) return a.score - b.score;
+      if (a.handSize !== b.handSize) return a.handSize - b.handSize;
+      return a.out - b.out;
+    });
+    const winnerRow = ranked[0];
+    if (winnerRow) {
+      for (const entry of ranked) {
+        if (entry.score === winnerRow.score && entry.handSize === winnerRow.handSize && entry.out === winnerRow.out) {
+          entry.pl.wins = (entry.pl.wins ?? 0) + 1;
+          log(code, `WIN          ${entry.pl.nick} → total wins ${entry.pl.wins}`);
+        }
+      }
     }
 
     everyone('gameEnd', {

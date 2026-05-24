@@ -1,4 +1,5 @@
-import { pos, cardConfig } from './Config.js'
+import { pos, cardConfig, uiConfig } from './Config.js'
+import { ColorReplacePipeline } from './ColorReplacePipeline.js'
 
 export class Card extends Phaser.GameObjects.Sprite {
 
@@ -203,9 +204,20 @@ export class Card extends Phaser.GameObjects.Sprite {
         return this;
     }
 
+    // Recolor the card's blue (the same hex used for the rest of the UI) to
+    // `hex`, leaving white numerals/sparkles and the cat/mouse art alone. The
+    // pulse yoyo-tweens the swap amount from 0 to 1 and back so the colored
+    // state is unambiguous at peak without being permanent. The pipeline is
+    // attached on-demand and detached on completion to keep the per-frame
+    // PostFX cost zero for cards at rest. Re-triggering while a pulse is in
+    // flight cancels the old one and restarts cleanly — without this, two
+    // peeks in quick succession would either stack tweens or the first
+    // pulse's onComplete would tear down the pipeline mid-second-pulse.
     highlight(hex, onComplete = () => {}) {
-        const ms = 1000
-        this.countween({
+        this._stopHighlightTween();
+        const ms = 1000;
+        this._setupReplace(hex);
+        this._highlightTween = this.scene.tweens.addCounter({
             from: 0,
             to: ms,
             duration: ms,
@@ -214,10 +226,11 @@ export class Card extends Phaser.GameObjects.Sprite {
             ease: 'Sine.inout',
             onUpdate: (tween) => {
                 const v = tween.getValue() / ms;
-                this.setTint(this.whiten(hex, v/2));
+                this._setReplaceAmount(v);
             },
             onComplete: () => {
-                this.clearTint();
+                this._highlightTween = null;
+                this._clearReplace();
                 onComplete.call(this);
             }
         });
@@ -225,17 +238,51 @@ export class Card extends Phaser.GameObjects.Sprite {
     }
 
     tint(hex) {
-        this.setTint(this.whiten(hex, 0.5));
+        this._stopHighlightTween();
+        this._setupReplace(hex);
+        this._setReplaceAmount(1);
         return this;
     }
 
-    whiten(hex, value) {
-        const white = Phaser.Display.Color.ValueToColor(0xffffff);
-        const color = Phaser.Display.Color.ValueToColor(hex);
-        const r = Phaser.Math.Interpolation.Linear([white.red, color.red], value);
-        const g = Phaser.Math.Interpolation.Linear([white.green, color.green], value);
-        const b = Phaser.Math.Interpolation.Linear([white.blue, color.blue], value);
-        return Phaser.Display.Color.GetColor(r, g, b);
+    clearTint() {
+        super.clearTint();
+        this._stopHighlightTween();
+        this._clearReplace();
+        return this;
+    }
+
+    _stopHighlightTween() {
+        if (this._highlightTween) {
+            this._highlightTween.stop();
+            this._highlightTween = null;
+        }
+    }
+
+    _setupReplace(hex) {
+        let pipe = this.getPostPipeline(ColorReplacePipeline);
+        if (Array.isArray(pipe)) pipe = pipe[0];
+        if (!pipe) {
+            this.setPostPipeline(ColorReplacePipeline);
+            pipe = this.getPostPipeline(ColorReplacePipeline);
+            if (Array.isArray(pipe)) pipe = pipe[0];
+        }
+        if (pipe) {
+            pipe.setSourceHex(uiConfig.COLOR);
+            pipe.setTargetHex(hex);
+        }
+    }
+
+    _setReplaceAmount(v) {
+        let pipe = this.getPostPipeline(ColorReplacePipeline);
+        if (Array.isArray(pipe)) pipe = pipe[0];
+        if (pipe) pipe.setAmount(v);
+    }
+
+    _clearReplace() {
+        // Phaser's removePostPipeline(class) compares instance === class which
+        // is always false — only the string-name path actually removes. The
+        // pipeline is registered as 'ColorReplacePipeline' in Game.create.
+        this.removePostPipeline('ColorReplacePipeline');
     }
 
     setDraggable(bool) {

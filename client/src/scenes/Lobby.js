@@ -65,7 +65,21 @@ export class Lobby extends Phaser.Scene {
     }
 
     createPlayerList() {
-        const ids = Object.keys(this.players);
+        // Display order: lower total points = higher rank (matches the
+        // in-game "lower is better" scoring). Tiebreakers: more wins ranks
+        // higher; remaining ties keep the underlying join order via Array
+        // sort being stable.
+        const ids = Object.keys(this.players).slice().sort((aId, bId) => {
+            const a = this.players[aId];
+            const b = this.players[bId];
+            const ap = a.points ?? 0;
+            const bp = b.points ?? 0;
+            if (ap !== bp) return ap - bp;
+            const aw = a.wins ?? 0;
+            const bw = b.wins ?? 0;
+            if (aw !== bw) return bw - aw;
+            return 0;
+        });
         const list = this.add.container(pos.X(50), pos.Y(20));
         // Always use the compact sizing so the layout stays stable when a
         // 6th or 7th player joins (no jump from the looser 2–5 sizing). The

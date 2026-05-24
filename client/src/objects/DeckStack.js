@@ -219,6 +219,15 @@ export class DeckStack {
             card.known = false;
             card.setFrame(12);
             card.setScale(card.oScale);
+            // Reshuffle can fire while a card on the playstack is mid-highlight
+            // pulse (e.g. you just copied wrong, the penalty deals exhausted
+            // the deck, and the reshuffle drags the still-pulsing card into
+            // the deck). Without an explicit clear, the highlight tween keeps
+            // running on the deck card and the color-replace pipeline stays
+            // attached, leaving a faintly player-tinted card visible in the
+            // stack until the pulse naturally completes — or permanently if
+            // anything stops the tween short of its onComplete.
+            card.clearTint();
             if (this.topCard) {
                 this.topCard.off().removeAllListeners();
             }

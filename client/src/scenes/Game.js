@@ -3,6 +3,7 @@ import { DeckStack } from '../objects/DeckStack.js'
 import { PlayStack } from '../objects/PlayStack.js'
 import { HandStack } from '../objects/HandStack.js'
 import { Log } from '../objects/Log.js'
+import { ColorReplacePipeline } from '../objects/ColorReplacePipeline.js'
 import { pos, uiConfig, playConfig, cardConfig, handConfig, TEXT_RESOLUTION, SOUND_MS } from '../objects/Config.js'
 
 export class Game extends Phaser.Scene {
@@ -58,20 +59,49 @@ export class Game extends Phaser.Scene {
     // Cumulative: if a callback learns that the consequences of the action
     // are longer than first assumed (e.g. a CAT was just displaced and +3
     // take sounds are about to arrive), it can call freeze() again to extend
-    // the expiry. The shorter delayedCalls fire first but only release the
-    // freeze if the latest expiry has already been reached.
+    // the expiry. A single timer tracks the latest expiry — older approach
+    // scheduled one delayedCall per call and used a `time.now >= expiry - 5`
+    // guard to skip clearing on stale fires, which could leave `frozen`
+    // stuck true if the latest callback ran a couple ms early (tab-throttle
+    // catchup, paused scene, sub-frame timing) and no further freeze ever
+    // scheduled a replacement timer.
     freeze(ms) {
         const expiry = this.time.now + ms;
         this.freezeExpiry = Math.max(this.freezeExpiry || 0, expiry);
         this.frozen = true;
-        this.time.delayedCall(ms, () => {
-            if (this.time.now >= (this.freezeExpiry || 0) - 5) {
-                this.frozen = false;
-            }
+        if (this.freezeTimer) {
+            this.freezeTimer.remove(false);
+            this.freezeTimer = null;
+        }
+        const delay = Math.max(0, this.freezeExpiry - this.time.now);
+        this.freezeTimer = this.time.delayedCall(delay, () => {
+            this.freezeTimer = null;
+            this.freezeExpiry = 0;
+            this.frozen = false;
         });
     }
 
+    // Safety net: any turn boundary should mean previous freezes are
+    // irrelevant (the actor's sound has long since played, or it's a new
+    // actor whose freeze hasn't started yet). Forcibly clear so a stuck
+    // freeze can never outlive a turn change.
+    clearFreeze() {
+        if (this.freezeTimer) {
+            this.freezeTimer.remove(false);
+            this.freezeTimer = null;
+        }
+        this.freezeExpiry = 0;
+        this.frozen = false;
+    }
+
     create() {
+
+        // Register the color-replace PostFX. Phaser's setPostPipeline(class)
+        // silently no-ops unless the class is in postPipelineClasses first.
+        const pipelines = this.game.renderer && this.game.renderer.pipelines;
+        if (pipelines && !pipelines.postPipelineClasses.has('ColorReplacePipeline')) {
+            pipelines.addPostPipeline('ColorReplacePipeline', ColorReplacePipeline);
+        }
 
         this.turn = new Button(this, pos.X(7), pos.Y(82), pos.X(10), pos.Y(5), uiConfig.COLOR, 'Turn 1', pos.Y(3), 'bold', 'white');
         this.round = new Button(this, pos.X(7), pos.Y(88), pos.X(10), pos.Y(5), uiConfig.COLOR, 'Round 1', pos.Y(3), 'bold', 'white');
@@ -157,7 +187,13 @@ export class Game extends Phaser.Scene {
             const id = data.id
             const turn = data.turn;
             const round = data.round;
-            
+
+            // A turn boundary should always release any leftover freeze — by
+            // now the previous actor's sounds have played and the next actor
+            // is either us (clean slate) or someone else (we shouldn't be
+            // frozen at all).
+            this.clearFreeze();
+
             this.turn.setText('Turn ' + (turn + 1));
             this.round.setText('Round ' + (round + 1));
 
@@ -449,25 +485,48 @@ export class Game extends Phaser.Scene {
             // ('empty') outranks a player who stood ('stand'); anyone else
             // (didn't go out) ranks last. Players tied on both score and
             // out-bucket all share the trophy.
+            // Tiebreak order: score asc → hand size asc (fewer cards left
+            // beats more) → outBy ('empty' > 'stand' > didn't go out). Hand
+            // size already separates an emptied player (0 cards) from a
+            // stander, so outBy only kicks in when both scores AND hand
+            // sizes match.
             const order = (r) => r.outBy === 'empty' ? 0 : r.outBy === 'stand' ? 1 : 2;
+            const compare = (a, b) => {
+                if (a.score !== b.score) return a.score - b.score;
+                if (a.handSize !== b.handSize) return a.handSize - b.handSize;
+                return order(a) - order(b);
+            };
             const results = Object.entries(playersData).map(([id, p]) => ({
                 id,
                 nick: p.nick,
                 color: p.color,
                 score: p.score ?? p.hand.flat().reduce((sum, v) => sum + v, 0),
+                handSize: p.hand.flat().length,
                 total: p.points ?? 0,
                 outBy: p.outBy
-            })).sort((a, b) => a.score !== b.score ? a.score - b.score : order(a) - order(b));
+            })).sort(compare);
+
+            // Standard competition ranking: tied players share the lower rank
+            // and the next distinct row jumps by the number tied. Tied iff
+            // compare returns 0 — same keys (score, hand size, out-bucket)
+            // used by the sort.
+            let rank = 1;
+            for (let i = 0; i < results.length; i++) {
+                if (i > 0 && compare(results[i - 1], results[i]) !== 0) {
+                    rank = i + 1;
+                }
+                results[i].rank = rank;
+            }
 
             const top = results[0];
-            const topOrder = order(top);
-            const isWinner = (r) => r.score === top.score && order(r) === topOrder;
+            const isWinner = (r) => compare(r, top) === 0;
 
             // Each result row is three equal-sized bubbles (name, round
-            // points, total points), separated by the same pixel gap that
-            // sits between rows so spacings read uniformly. Sized to always
-            // fit a 7-player game above the Go-to buttons at pos.Y(80) — the
-            // start y is high enough that even seven rows clear them.
+            // points, total points) plus a small position bubble on the
+            // left. Separated by the same pixel gap that sits between rows
+            // so spacings read uniformly. Sized to always fit a 7-player
+            // game above the Go-to buttons at pos.Y(80) — the start y is
+            // high enough that even seven rows clear them.
             const rowH = pos.Y(7);
             const margin = pos.Y(1);
             const rowStride = rowH + margin;
@@ -475,16 +534,22 @@ export class Game extends Phaser.Scene {
             const totalW = pos.X(44);
             const bubbleW = (totalW - 2 * margin) / 3;
             const sideOffset = bubbleW + margin;
+            const sideW = pos.X(4);
+            const posX = pos.X(50) - sideOffset - bubbleW / 2 - margin - sideW / 2;
+            const catX = pos.X(50) + sideOffset + bubbleW / 2 + margin + sideW / 2;
             const startY = pos.Y(20);
             for (let i = 0; i < results.length; i++) {
                 const r = results[i];
                 const winner = isWinner(r);
                 const style = winner ? 'bold' : '';
-                const namePrefix = winner ? '😺 ' : '';
                 const y = startY + i * rowStride;
-                new Button(this, pos.X(50) - sideOffset, y, bubbleW, rowH, r.color, namePrefix + r.nick, rowFont, style, 'white').setDepth(31);
+                new Button(this, posX, y, sideW, rowH, r.color, r.rank + '.', rowFont, style, 'white').setDepth(31);
+                new Button(this, pos.X(50) - sideOffset, y, bubbleW, rowH, r.color, r.nick, rowFont, style, 'white').setDepth(31);
                 new Button(this, pos.X(50), y, bubbleW, rowH, r.color, r.score + ' Points', rowFont, style, 'white').setDepth(31);
                 new Button(this, pos.X(50) + sideOffset, y, bubbleW, rowH, r.color, r.total + ' Total', rowFont, style, 'white').setDepth(31);
+                if (winner) {
+                    new Button(this, catX, y, sideW, rowH, r.color, '😺', rowFont, style, 'white').setDepth(31);
+                }
             }
 
             // Go to menu — left, mirroring Lobby's "Leave Room" position so

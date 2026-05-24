@@ -36,6 +36,32 @@ export class PlayStack {
             && this.topCard && this.topCard.key === card.key
             && !this.topIsCopy;
 
+        // If the local player is mid-drag on the current top of the playstack
+        // (idle fidgeting, not an actual play) when a new card arrives,
+        // cancel the drag and tween the displaced card back to the playstack
+        // slot. Otherwise dragend would fire back() to its saved oX/oY (=
+        // playstack position) AFTER the new card has landed there, leaving
+        // the old card visibly stuck on top of the new top with no working
+        // listeners — its draggable was just turned off as it became
+        // bottomCard.
+        if (this.topCard && this.topCard.dragging) {
+            const displaced = this.topCard;
+            displaced.cancelDrag();
+            displaced.tween({
+                x: this.x,
+                y: this.y,
+                duration: 200,
+                ease: 'Quart.out'
+            });
+        }
+
+        // Capture whether the previous top was an active drop zone — i.e.
+        // the local player is mid-drag with the playstack as a valid drop
+        // target. We have to carry that state to the new top once it lands,
+        // otherwise the alien's play silently nukes the player's drop
+        // target and they have to release + re-grab to restore it.
+        const wasDropZone = !!(this.topCard && this.topCard.input && this.topCard.input.dropZone);
+
         this.array.push(card);
 
         this.topCard = this.array[this.array.length - 1];
@@ -49,7 +75,11 @@ export class PlayStack {
 
         if (this.bottomCard) {
             this.bottomCard.setDraggable(false);
-            this.bottomCard.setDropZone(false);
+            // The old top's drop-zone clear is deferred to the new top's
+            // tween onComplete — for the 200ms the new card is animating
+            // in, the old top stays at the playstack centre acting as the
+            // valid drop target so the player's in-flight drag doesn't lose
+            // its zone mid-air.
         }
 
         this.topIsCopy = newTopIsCopy;
@@ -66,7 +96,21 @@ export class PlayStack {
             onComplete: () => {
                 card.flip(true)
                     .setDepth(0);
+                // Display-list order is the tiebreaker for same-depth
+                // sprites and otherwise reflects arbitrary deck-init order,
+                // so older playstack cards can render above newer ones.
+                // Force the freshly landed top to the end of the list so the
+                // visual stack matches the logical stack.
+                this.scene.children.bringToTop(card);
                 this.setDragEvents();
+                // Hand the drop-zone baton over: enable on new top if the
+                // user was using the playstack, then clear the old top.
+                if (wasDropZone) {
+                    card.setDropZone(true);
+                }
+                if (this.bottomCard) {
+                    this.bottomCard.setDropZone(false);
+                }
             }
         });
     }
@@ -90,6 +134,11 @@ export class PlayStack {
 
         const deckCards = [];
         for (const card of deck) {
+            // Same rationale as DeckStack.pushAll's clearTint — any lingering
+            // highlight/tint on a playstack card has to be torn down before
+            // it migrates somewhere new, or the color-replace pipeline rides
+            // along on the destination.
+            card.clearTint();
             if (card.key == 11) {
                 card.setFrame(card.key);
                 card.scaleX = card.oScale;

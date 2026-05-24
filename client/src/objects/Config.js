@@ -33,14 +33,16 @@ const HAND_Y_MAIN = pos.Y(82);
 const HAND_Y_UP = pos.Y(25);
 const HAND_Y_CENTER = pos.Y(40);
 const HAND_Y_DOWN = pos.Y(55);
-// Three-per-side stacking for 6- and 7-player rooms. Symmetric 20% spacing
-// between the three slots leaves a margin between adjacent hands at the
-// SMALL_ALIEN scale; LOW stays above both the self hand (at pos.Y(82),
-// extending up to ~67%) and the log's top edge (~70%) so the right-side
-// stack doesn't run into either.
-const HAND_Y_HIGH = pos.Y(20);
+// Three-per-side stacking for 6- and 7-player rooms. Symmetric 17% spacing
+// between the three slots — tighter than the original 20% so HIGH clears
+// the CAT-pile that anchors the top-left corner (cats extend to about
+// pos.Y(10.5), so HIGH at 23 puts the alien's label around pos.Y(13.5)
+// with a comfortable gap). LOW correspondingly creeps up to keep the row
+// symmetric around MID and to leave room above the self hand (pos.Y(82),
+// hand top ~67%) and the log's top edge (~69%).
+const HAND_Y_HIGH = pos.Y(23);
 const HAND_Y_MID = pos.Y(40);
-const HAND_Y_LOW = pos.Y(60);
+const HAND_Y_LOW = pos.Y(57);
 
 export const handConfig = {
     X: [[HAND_X_MAIN, HAND_X_MAIN + HAND_X_OFFSET],
@@ -55,8 +57,13 @@ export const handConfig = {
         [HAND_Y_MAIN, HAND_Y_CENTER, HAND_Y_CENTER],
         [HAND_Y_MAIN, HAND_Y_DOWN, HAND_Y_UP, HAND_Y_CENTER],
         [HAND_Y_MAIN, HAND_Y_DOWN, HAND_Y_UP, HAND_Y_UP, HAND_Y_DOWN],
-        // 6 players: turn order goes self → right (low → mid → high) → left (high → low).
-        [HAND_Y_MAIN, HAND_Y_LOW, HAND_Y_MID, HAND_Y_HIGH, HAND_Y_HIGH, HAND_Y_LOW],
+        // 6 players: turn order goes self → right (low → mid → high) → left (up → down).
+        // The 3-side uses the HIGH/MID/LOW stack, but the 2-side falls back
+        // to the tighter UP/DOWN positions so the two left aliens are
+        // centered around the screen's vertical middle, the same way the
+        // lone left alien in a 4-player game sits at CENTER between the
+        // right side's UP/DOWN pair.
+        [HAND_Y_MAIN, HAND_Y_LOW, HAND_Y_MID, HAND_Y_HIGH, HAND_Y_UP, HAND_Y_DOWN],
         // 7 players: turn order goes self → right (low → mid → high) → left (high → mid → low).
         [HAND_Y_MAIN, HAND_Y_LOW, HAND_Y_MID, HAND_Y_HIGH, HAND_Y_HIGH, HAND_Y_MID, HAND_Y_LOW]],
     ROWS: 2,

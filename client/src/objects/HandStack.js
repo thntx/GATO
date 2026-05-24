@@ -78,17 +78,28 @@ export class HandStack {
             this.order();
         }
 
+        // Same six-seven easter egg used during gameplay (checkPlaySounds on
+        // the server): flag the moment a 7 is revealed immediately after a
+        // 6 from the same player's hand, so we can fire the sixSeven sound
+        // alongside the regular show sound. Only rooms named '67' get it,
+        // matching the server-side rule.
+        const flat = hand.flat();
         let cardIdx = 0;
         for (let i = 0; i < hand.length; i++) {
             for (let j = 0; j < hand[i].length; j++) {
                 if (this.array[i] && this.array[i][j]) {
                     const card = this.array[i][j];
                     const key = hand[i][j];
+                    const prevKey = cardIdx > 0 ? flat[cardIdx - 1] : null;
+                    const sixSeven = this.scene.code === '67' && prevKey === 6 && key === 7;
                     this.scene.time.delayedCall(startDelay + cardIdx * delayPerCard, () => {
                         if (card.active) {
                             card.key = key;
                             card.flip(true);
                             this.scene.playSound('show');
+                            if (sixSeven) {
+                                this.scene.playSound('sixSeven');
+                            }
                         }
                     });
                     cardIdx++;
@@ -107,7 +118,13 @@ export class HandStack {
 
         card.on('pointerdown', () => {
 
-            if (this.scene.frozen) return;
+            // The scene's frozen flag is honoured everywhere else (deck
+            // draw, skip/stand buttons) but deliberately not here: a copy
+            // must always be available the instant the player notices a
+            // match, even if their own previous action's sound is still
+            // playing. The `scene.copy` gate further down + the server's
+            // per-room lock prevent duplicate copies; the only cost is
+            // sound overlap when actions stack tight.
             if (this.out) return;
 
             if (this.scene.peeks[this.type] && !this.scene.peekedCards.includes(card)) {
@@ -158,16 +175,13 @@ export class HandStack {
             card.setDepth(1);
             // There is no need to define x and y as those have been defined in this.order()
 
-            // The playstack accepts any card the local player has personally
-            // seen (peek phase, peek effects, or having drawn it). Cards
-            // peeked during a card-10 peekTrade are allowed too — copying
-            // one of them on the playstack substitutes for the trade and
-            // ends the player's turn (server treats it as a completion of
-            // the activeEffect). Unknown cards never become a drop target,
-            // so the drag silently bounces back via dragend → card.back().
-            if (this.scene.copy && card.known) {
+            // The playstack accepts any hand card while copying is open.
+            // (Earlier the gate also required `card.known` so you could only
+            // attempt copies on cards you'd personally seen; that
+            // restriction was lifted, and now any card the player drags is
+            // eligible to be slapped on the discard pile.)
+            if (this.scene.copy) {
                 this.scene.playStack.setDropZone(true);
-
             }
 
             if (this.scene.trade) {
@@ -249,9 +263,19 @@ export class HandStack {
                         // player's known set, or the slot was emptied by a
                         // concurrent action. Restore the copy gate so the
                         // player can try a different (known) card, and animate
-                        // the rejected card back to its hand position.
+                        // the rejected card back to its hand position — but
+                        // only if it's still IN a hand. When the slot was
+                        // emptied because another player won the race for
+                        // the same card, the `copy` broadcast for their win
+                        // has likely already arrived and promoted this card
+                        // to the playstack (type === 'play'); calling back()
+                        // then would drag it from the playstack to its stale
+                        // hand oX/oY and leave it floating there at the
+                        // wrong scale.
                         this.scene.copy = true;
-                        card.back();
+                        if (card.type === 'hand') {
+                            card.back();
+                        }
                         return;
                     }
                     card.key = result.key;
@@ -278,15 +302,23 @@ export class HandStack {
                     // peekTrade (10) / trade (9) effect, the server is about
                     // to advance the turn — hide the skip button and clear
                     // local effect flags so the UI matches before turnStart
-                    // arrives.
+                    // arrives. But only when every peek the effect granted
+                    // has been used: copying a 7 without peeking an alien
+                    // (or copying during a 10 before exhausting its two
+                    // peeks) does NOT substitute, so the peek slot has to
+                    // stay open. Card 9's play left peeks at 0 already, so
+                    // its copy still substitutes.
                     if (this.scene.waitingPeek || this.scene.waitingTrade) {
-                        this.scene.skip.setVisible(false);
-                        this.scene.myTurn = false;
-                        this.scene.waitingPeek = false;
-                        this.scene.waitingTrade = false;
-                        this.scene.peekTrade = false;
-                        this.scene.trade = false;
-                        this.scene.peeks = { self: 0, alien: 0 };
+                        const peeksLeft = this.scene.peeks.self + this.scene.peeks.alien;
+                        if (peeksLeft === 0) {
+                            this.scene.skip.setVisible(false);
+                            this.scene.myTurn = false;
+                            this.scene.waitingPeek = false;
+                            this.scene.waitingTrade = false;
+                            this.scene.peekTrade = false;
+                            this.scene.trade = false;
+                            this.scene.peeks = { self: 0, alien: 0 };
+                        }
                     }
                 });
 
